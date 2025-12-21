@@ -4,9 +4,18 @@ import {
   ArrowUpRight, ArrowDownRight, Package, ShoppingBag, Landmark,
   LayoutDashboard, History
 } from "lucide-react";
-import { storage } from "../services/storage";
+
+// 👇 IMPORTAMOS LOS HOOKS REALES
+import { useWorkOrders } from "../hooks/useWorkOrders";
+import { useCashFlow } from "../hooks/useCashFlow";
+import { useInventory } from "../hooks/useInventory";
 
 export default function Dashboard() {
+  // 1. Obtenemos datos frescos de la BD
+  const { orders, loading: loadingOrders } = useWorkOrders();
+  const { movements, loading: loadingCash } = useCashFlow();
+  const { inventory, loading: loadingInv } = useInventory();
+
   const [stats, setStats] = useState({
     waiting_count: 0,
     active_count: 0,
@@ -17,64 +26,57 @@ export default function Dashboard() {
     low_stock_items: 0,
     movements_count: 0
   });
-  const [recentMovements, setRecentMovements] = useState([]);
-  const [loading, setLoading] = useState(true);
+
+  const loading = loadingOrders || loadingCash || loadingInv;
 
   useEffect(() => {
-    loadDashboardData();
-  }, []);
+    if (loading) return;
 
-  async function loadDashboardData() {
-    setLoading(true);
-    try {
-      // 1. Load Workshop Data
-      const orders = await storage.get('reparaciones_list', []);
-      const waiting = orders.filter(o => o.status === 'Ingresado' || o.status === 'En Espera').length;
-      const active = orders.filter(o => o.status === 'En Reparación' || o.status === 'Esperando Repuesto').length;
-      const ready = orders.filter(o => o.status === 'Listo para Retiro').length;
+    // --- CÁLCULOS EN TIEMPO REAL ---
 
-      // 2. Load Cash Flow Data (Current Month)
-      const movements = await storage.get('cash_flow_movements', []);
-      const currentMonth = new Date().toISOString().slice(0, 7);
-      const monthMovements = movements.filter(m => m.date.startsWith(currentMonth));
+    // 1. Taller Stats
+    const waiting = orders.filter(o => o.status === 'En cola').length;
+    const active = orders.filter(o => ['Trabajando', 'Revisión del Coordinador'].includes(o.status)).length;
+    // OTs listas para entrega (Pagadas/Notificadas pero aun en taller)
+    const ready = orders.filter(o => ['Pagado y no retirado', 'Notificado y no pagado'].includes(o.status)).length;
 
-      const revenue = monthMovements
-        .filter(m => m.type === 'income')
-        .reduce((acc, curr) => acc + Number(curr.totalAmount || 0), 0);
+    // 2. Finanzas Stats (Mes Actual)
+    const currentMonth = new Date().toISOString().slice(0, 7); // YYYY-MM
+    const monthMovements = movements.filter(m => m.date && m.date.startsWith(currentMonth));
 
-      const expenses = monthMovements
-        .filter(m => m.type === 'expense')
-        .reduce((acc, curr) => acc + Number(curr.totalAmount || 0), 0);
+    const revenue = monthMovements
+      .filter(m => m.type === 'income')
+      .reduce((acc, curr) => acc + Number(curr.totalAmount || 0), 0);
 
-      // 3. Load Inventory Data
-      const inventory = await storage.get('inventory_items', []);
-      const lowStock = inventory.filter(i => {
-        const totalStock = Object.values(i.stocksByWarehouse || {}).reduce((a, b) => a + b, 0);
-        return i.type !== 'Servicio' && totalStock <= (i.min_stock || 0);
-      }).length;
-      const stockValue = inventory.reduce((acc, i) => {
-        const totalStock = Object.values(i.stocksByWarehouse || {}).reduce((a, b) => a + b, 0);
-        return acc + (totalStock * (i.price_cost || 0));
-      }, 0);
+    const expenses = monthMovements
+      .filter(m => m.type === 'expense')
+      .reduce((acc, curr) => acc + Number(curr.totalAmount || 0), 0);
 
-      setStats({
-        waiting_count: waiting,
-        active_count: active,
-        ready_to_collect_count: ready,
-        monthly_revenue: revenue,
-        monthly_expenses: expenses,
-        total_stock_value: stockValue,
-        low_stock_items: lowStock,
-        movements_count: monthMovements.length
-      });
+    // 3. Inventario Stats
+    const lowStock = inventory.filter(i => {
+      const totalStock = Object.values(i.stocksByWarehouse || {}).reduce((a, b) => a + b, 0);
+      return i.type !== 'Servicio' && totalStock <= (i.min_stock || 0);
+    }).length;
 
-      setRecentMovements(movements.slice(0, 5));
-    } catch (error) {
-      console.error("Error cargando dashboard:", error);
-    } finally {
-      setLoading(false);
-    }
-  }
+    const stockValue = inventory.reduce((acc, i) => {
+      const totalStock = Object.values(i.stocksByWarehouse || {}).reduce((a, b) => a + b, 0);
+      return acc + (totalStock * (i.price_cost || 0));
+    }, 0);
+
+    setStats({
+      waiting_count: waiting,
+      active_count: active,
+      ready_to_collect_count: ready,
+      monthly_revenue: revenue,
+      monthly_expenses: expenses,
+      total_stock_value: stockValue,
+      low_stock_items: lowStock,
+      movements_count: monthMovements.length
+    });
+
+  }, [orders, movements, inventory, loading]);
+
+  const recentMovements = movements.slice(0, 5); // Últimos 5 movimientos
 
   const formatCurrency = (amount) => {
     return new Intl.NumberFormat("es-CL", {
@@ -89,14 +91,14 @@ export default function Dashboard() {
       <div className="flex items-center justify-center h-[60vh]">
         <div className="flex flex-col items-center gap-4">
           <div className="w-12 h-12 border-4 border-brand-purple border-t-transparent rounded-full animate-spin"></div>
-          <p className="text-slate-400 font-bold uppercase tracking-widest text-xs">Sincronizando Métricas...</p>
+          <p className="text-slate-400 font-bold uppercase tracking-widest text-xs">Conectando con Satélite...</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-700">
+    <div className="space-y-8 animate-in fade-in duration-700 pb-20">
       {/* HEADER */}
       <div className="flex justify-between items-center">
         <div>
@@ -105,7 +107,7 @@ export default function Dashboard() {
         </div>
         <div className="bg-slate-900 border border-white/5 px-4 py-2 rounded-2xl flex items-center gap-3">
           <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
-          <span className="text-[10px] font-black text-slate-300 uppercase tracking-widest">Sistema Online</span>
+          <span className="text-[10px] font-black text-slate-300 uppercase tracking-widest">Base de Datos: Conectada</span>
         </div>
       </div>
 
@@ -251,9 +253,9 @@ export default function Dashboard() {
                 <div className="p-2 bg-brand-purple/10 rounded-lg text-brand-purple">
                   <LayoutDashboard size={16} />
                 </div>
-                <span className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">Uptime</span>
+                <span className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">Estado</span>
               </div>
-              <span className="text-sm font-black text-emerald-400 italic">99.9%</span>
+              <span className="text-sm font-black text-emerald-400 italic">Online</span>
             </div>
             <div className="pt-6 border-t border-white/5 flex flex-col items-center text-center">
               <div className="w-20 h-20 bg-brand-gradient rounded-full flex items-center justify-center p-0.5 shadow-2xl shadow-brand-purple/20">
@@ -261,8 +263,8 @@ export default function Dashboard() {
                   <TrendingUp className="text-brand-cyan" size={32} />
                 </div>
               </div>
-              <h4 className="text-white font-black uppercase italic tracking-widest mt-4">Rendimiento Alta</h4>
-              <p className="text-[10px] text-slate-500 font-bold mt-1">Tu flujo de caja ha crecido un 14% este mes.</p>
+              <h4 className="text-white font-black uppercase italic tracking-widest mt-4">Sistema Sincronizado</h4>
+              <p className="text-[10px] text-slate-500 font-bold mt-1">Todos tus módulos están conectados a la nube.</p>
             </div>
           </div>
         </div>

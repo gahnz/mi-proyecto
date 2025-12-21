@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import {
     Search,
     Plus,
@@ -7,34 +7,22 @@ import {
     Laptop2,
     Cpu
 } from "lucide-react";
-import { INITIAL_EQUIPMENT, EQUIP_TYPES } from "../data/mockData";
-import { storage } from "../services/storage";
+import { EQUIP_TYPES } from "../data/mockData";
+import { useEquipos } from "../hooks/useEquipos";
+import { useInventory } from "../hooks/useInventory"; // 👈 IMPORTAMOS EL HOOK DE INVENTARIO
 
 const Equipos = () => {
-    const [equipments, setEquipments] = useState([]);
-    const [inventory, setInventory] = useState([]);
-    const [loading, setLoading] = useState(true);
+    // 1. Usamos ambos Hooks para traer datos REALES de la base de datos
+    const { equipments, loading: loadingEquipos, addEquipo, updateEquipo, deleteEquipo } = useEquipos();
+    const { inventory, loading: loadingInventory } = useInventory(); // 👈 Traemos el inventario real
+    
+    // Estado local para UI y búsqueda
     const [searchTerm, setSearchTerm] = useState("");
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [editingId, setEditingId] = useState(null);
     const [newEquip, setNewEquip] = useState({ type: "Notebook", brand: "", model: "" });
 
-    useEffect(() => {
-        loadData();
-    }, []);
-
-    const loadData = async () => {
-        setLoading(true);
-        const [equipData, inventoryData] = await Promise.all([
-            storage.get('equipos_list', INITIAL_EQUIPMENT),
-            storage.get('inventory_items', [])
-        ]);
-        setEquipments(equipData);
-        setInventory(inventoryData);
-        setLoading(false);
-    };
-
-    // Filter logic
+    // Lógica de filtrado
     const filteredEquipments = equipments.filter(item =>
         item.model.toLowerCase().includes(searchTerm.toLowerCase()) ||
         item.brand.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -55,26 +43,28 @@ const Equipos = () => {
     const handleSaveEquipment = async () => {
         if (!newEquip.brand || !newEquip.model) return;
 
-        if (editingId) {
-            // Edit existing
-            const updated = { id: editingId, ...newEquip };
-            await storage.update('equipos_list', updated);
-            setEquipments(equipments.map(item => item.id === editingId ? updated : item));
-        } else {
-            // Create new
-            const newItem = await storage.add('equipos_list', newEquip);
-            setEquipments([newItem, ...equipments]);
+        try {
+            if (editingId) {
+                await updateEquipo(editingId, newEquip);
+            } else {
+                await addEquipo(newEquip);
+            }
+            
+            setEditingId(null);
+            setNewEquip({ type: "Notebook", brand: "", model: "" });
+            setIsModalOpen(false);
+        } catch (error) {
+            alert("Error al guardar: " + error.message);
         }
-
-        setEditingId(null);
-        setNewEquip({ type: "Notebook", brand: "", model: "" });
-        setIsModalOpen(false);
     };
 
     const handleDeleteEquipment = async (id) => {
         if (window.confirm("¿Seguro que quieres eliminar este modelo?")) {
-            await storage.remove('equipos_list', id);
-            setEquipments(equipments.filter(item => item.id !== id));
+            try {
+                await deleteEquipo(id);
+            } catch (error) {
+                alert("Error al eliminar: " + error.message);
+            }
         }
     };
 
@@ -84,7 +74,9 @@ const Equipos = () => {
         return <Icon size={20} />;
     };
 
-    if (loading) return <div className="p-8 text-center text-slate-500">Cargando equipos...</div>;
+    if (loadingEquipos || loadingInventory) {
+        return <div className="p-8 text-center text-slate-500 animate-pulse">Sincronizando datos...</div>;
+    }
 
     return (
         <div className="space-y-6 animate-fadeIn">
@@ -94,7 +86,7 @@ const Equipos = () => {
                     <h1 className="text-3xl font-bold bg-clip-text text-transparent bg-brand-gradient">
                         Catálogo de Equipos
                     </h1>
-                    <p className="text-slate-400 mt-1">Gestión de modelos y marcas soportadas</p>
+                    <p className="text-slate-400 mt-1">Gestión centralizada en Nube ☁️</p>
                 </div>
                 <button
                     onClick={() => handleOpenModal()}
@@ -125,6 +117,7 @@ const Equipos = () => {
             {/* Grid of Equipment Models */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                 {filteredEquipments.map((item) => {
+                    // Lógica actualizada: Ahora busca en el inventario REAL de Supabase
                     const linkedItems = inventory.filter(invItem =>
                         invItem.compatible_models?.includes(`${item.brand} ${item.model}`)
                     );
@@ -167,7 +160,7 @@ const Equipos = () => {
                                 <p className="text-white font-medium truncate" title={item.model}>{item.model}</p>
                             </div>
 
-                            {/* Linked Items Section */}
+                            {/* Linked Items Section (Ahora con datos Reales) */}
                             <div className="mt-auto pt-4 border-t border-white/5">
                                 <p className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-2">
                                     <span className="w-1.5 h-1.5 rounded-full bg-brand-purple"></span>
@@ -178,7 +171,7 @@ const Equipos = () => {
                                         {linkedItems.slice(0, 3).map(link => (
                                             <div key={link.id} className="text-xs text-slate-300 flex justify-between items-center bg-white/5 px-2 py-1 rounded">
                                                 <span className="truncate flex-1">{link.name}</span>
-                                                <span className={link.stock > 0 ? "text-brand-cyan" : "text-red-400"}>
+                                                <span className={`font-mono ${link.stock > 0 ? "text-brand-cyan" : "text-red-400"}`}>
                                                     {link.stock}
                                                 </span>
                                             </div>
@@ -201,11 +194,11 @@ const Equipos = () => {
             {filteredEquipments.length === 0 && (
                 <div className="text-center py-20 text-slate-500">
                     <Laptop2 size={48} className="mx-auto mb-4 opacity-20" />
-                    <p>No se encontraron equipos... ¿Registramos uno nuevo?</p>
+                    <p>No hay equipos registrados en la nube. ¡Agrega el primero!</p>
                 </div>
             )}
 
-            {/* New/Edit Equipment Modal */}
+            {/* Modal code remains the same */}
             {isModalOpen && (
                 <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
                     <div className="bg-slate-900 border border-white/10 rounded-2xl w-full max-w-md shadow-2xl animate-in fade-in zoom-in duration-200">

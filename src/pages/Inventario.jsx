@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Plus, Search, AlertTriangle, Edit3, Trash2, X, Wrench, CheckSquare, Square, Home, Truck, Zap } from "lucide-react";
-import { INITIAL_EQUIPMENT } from "../data/mockData";
-import { storage } from "../services/storage";
+import { useInventory } from "../hooks/useInventory"; // 👈 Nuevo Hook
+import { useEquipos } from "../hooks/useEquipos";     // 👈 Reutilizamos el de Equipos
 
 const WAREHOUSES = [
   { id: "Bodega Local", label: "Bodega Local", icon: <Home size={14} />, color: "bg-slate-800 text-slate-300" },
@@ -10,11 +10,11 @@ const WAREHOUSES = [
 ];
 
 export default function Inventario() {
-  const [items, setItems] = useState([]);
-  const [availableEquipments, setAvailableEquipments] = useState([]);
-  const [searchTerm, setSearchTerm] = useState("");
-  const [loading, setLoading] = useState(true);
+  // 1. GESTIÓN DE ESTADO CON HOOKS (Adiós LocalStorage manual)
+  const { inventory: items, loading, addItem, updateItem, deleteItem } = useInventory();
+  const { equipments: availableEquipments } = useEquipos(); // Cargamos equipos reales
 
+  const [searchTerm, setSearchTerm] = useState("");
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [itemToDelete, setItemToDelete] = useState(null);
@@ -37,33 +37,7 @@ export default function Inventario() {
     compatible_models: []
   });
 
-  useEffect(() => {
-    fetchData();
-  }, []);
-
-  async function fetchData() {
-    setLoading(true);
-    const inventoryData = await storage.get('inventory_items', []);
-
-    // Migration: ensure every item has stocksByWarehouse
-    const migratedData = (inventoryData || []).map(item => {
-      if (!item.stocksByWarehouse) {
-        const stocks = { ...initialStocks };
-        if (item.warehouse && item.stock !== undefined) {
-          stocks[item.warehouse] = item.stock;
-        } else if (item.stock !== undefined) {
-          stocks["Bodega Local"] = item.stock;
-        }
-        return { ...item, stocksByWarehouse: stocks };
-      }
-      return item;
-    });
-
-    setItems(migratedData);
-    const equipmentData = await storage.get('equipos_list', INITIAL_EQUIPMENT);
-    setAvailableEquipments(equipmentData || []);
-    setLoading(false);
-  }
+  // --- ACTIONS ---
 
   const handleEdit = (item) => {
     setEditingId(item.id);
@@ -73,7 +47,7 @@ export default function Inventario() {
       sku: item.sku || "",
       price_sell: item.price_sell,
       price_cost: item.price_cost || 0,
-      stocksByWarehouse: item.stocksByWarehouse ? { ...item.stocksByWarehouse } : { ...initialStocks },
+      stocksByWarehouse: item.stocksByWarehouse || { ...initialStocks },
       min_stock: item.min_stock,
       compatible_models: item.compatible_models || []
     });
@@ -87,32 +61,29 @@ export default function Inventario() {
 
   const handleDelete = async () => {
     if (!itemToDelete) return;
-    await storage.remove('inventory_items', itemToDelete.id);
-    setItems(items.filter(i => i.id !== itemToDelete.id));
-    setIsDeleteModalOpen(false);
-    setItemToDelete(null);
+    try {
+      await deleteItem(itemToDelete.id);
+      setIsDeleteModalOpen(false);
+      setItemToDelete(null);
+    } catch (error) {
+      alert("Error al eliminar: " + error.message);
+    }
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    const finalData = { ...formData };
-
-    // Calculate total stock for display/sorting if needed, though we use the object now
-    const totalStock = Object.values(finalData.stocksByWarehouse).reduce((a, b) => a + b, 0);
-    finalData.stock = totalStock; // Keep sync for other modules if they use .stock
-
-    if (editingId) {
-      const updated = { ...finalData, id: editingId };
-      await storage.update('inventory_items', updated);
-      setItems(items.map(i => i.id === editingId ? updated : i));
-    } else {
-      const newItem = await storage.add('inventory_items', finalData);
-      setItems([newItem, ...items]);
+    try {
+      if (editingId) {
+        await updateItem(editingId, formData);
+      } else {
+        await addItem(formData);
+      }
+      setIsModalOpen(false);
+      setEditingId(null);
+      resetForm();
+    } catch (error) {
+      alert("Error al guardar: " + error.message);
     }
-
-    setIsModalOpen(false);
-    setEditingId(null);
-    resetForm();
   };
 
   const resetForm = () => {
@@ -150,7 +121,7 @@ export default function Inventario() {
 
   const filteredItems = items.filter(i =>
     i.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    i.sku?.toLowerCase().includes(searchTerm.toLowerCase())
+    (i.sku && i.sku.toLowerCase().includes(searchTerm.toLowerCase()))
   );
 
   return (
@@ -159,7 +130,7 @@ export default function Inventario() {
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-3xl font-black text-white tracking-tight uppercase italic">Control de Inventario</h1>
-          <p className="text-slate-400 font-medium">Gestión multi-bodega y stock centralizado.</p>
+          <p className="text-slate-400 font-medium">Gestión multi-bodega centralizada.</p>
         </div>
         <button
           onClick={() => { resetForm(); setIsModalOpen(true); }}
@@ -181,6 +152,7 @@ export default function Inventario() {
             onChange={(e) => setSearchTerm(e.target.value)}
           />
         </div>
+        {loading && <span className="text-xs text-brand-purple animate-pulse font-bold uppercase">Sincronizando...</span>}
       </div>
 
       {/* TABLE */}
@@ -244,7 +216,7 @@ export default function Inventario() {
                     )}
                   </td>
                   <td className="px-6 py-4 text-right text-white font-black italic text-lg tracking-tighter shadow-sm">
-                    ${item.price_sell.toLocaleString('es-CL')}
+                    ${(item.price_sell || 0).toLocaleString('es-CL')}
                   </td>
                   <td className="px-6 py-4">
                     <div className="flex justify-center gap-2 truncate">
@@ -264,7 +236,7 @@ export default function Inventario() {
         {filteredItems.length === 0 && !loading && (
           <div className="text-center py-20 flex flex-col items-center">
             <Search size={48} className="text-slate-800 mb-4" />
-            <p className="text-slate-500 font-black uppercase tracking-widest">No se encontraron resultados</p>
+            <p className="text-slate-500 font-black uppercase tracking-widest">No hay items en la base de datos</p>
           </div>
         )}
       </div>
@@ -400,17 +372,18 @@ export default function Inventario() {
 
                     <div className="space-y-2">
                       <label className="text-[10px] uppercase font-black text-slate-500 tracking-widest ml-1 flex items-center gap-2">
-                        <Wrench size={12} /> Modelos Compatibles
+                        <Wrench size={12} /> Modelos Compatibles (De BD Real)
                       </label>
                       <div className="bg-slate-950 border border-white/5 rounded-3xl p-4 h-[220px] overflow-y-auto space-y-2 custom-scrollbar">
-                        {availableEquipments.length === 0 && <p className="text-slate-500 text-sm text-center py-4 italic">Cargando modelos...</p>}
+                        {availableEquipments.length === 0 && <p className="text-slate-500 text-sm text-center py-4 italic">No hay equipos registrados aún...</p>}
 
                         {availableEquipments.map(equip => {
-                          const isSelected = formData.compatible_models.includes(`${equip.brand} ${equip.model}`);
+                          const fullName = `${equip.brand} ${equip.model}`;
+                          const isSelected = formData.compatible_models.includes(fullName);
                           return (
                             <div
                               key={equip.id}
-                              onClick={() => toggleCompatibleModel(`${equip.brand} ${equip.model}`)}
+                              onClick={() => toggleCompatibleModel(fullName)}
                               className={`flex items-center gap-3 p-3 rounded-xl cursor-pointer border transition-all ${isSelected
                                 ? "bg-brand-purple/20 border-brand-purple/50"
                                 : "bg-slate-900 border-white/5 hover:bg-slate-800"
@@ -420,7 +393,7 @@ export default function Inventario() {
                                 {isSelected ? <CheckSquare size={18} /> : <Square size={18} />}
                               </div>
                               <div className="flex-1">
-                                <div className="text-sm font-bold text-white leading-tight underline decoration-white/0 group-hover:decoration-white/20 transition-all">{equip.brand} {equip.model}</div>
+                                <div className="text-sm font-bold text-white leading-tight underline decoration-white/0 group-hover:decoration-white/20 transition-all">{fullName}</div>
                                 <div className="text-[9px] text-slate-500 uppercase font-black tracking-widest">{equip.type}</div>
                               </div>
                             </div>
