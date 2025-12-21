@@ -47,21 +47,19 @@ export const generateOrderPDF = async (order) => {
       // Datos Cliente
       customer: order.customer || order.customer_name || "Cliente Manual",
       phone: order.customer_phone || order.phone || "No registrado",
-      address: order.location || order.address || "No registrada",
       
-      // Datos Equipo
+      // 👇 CAMBIO AQUÍ: Usar customer_address en lugar de location
+      address: order.customer_address || order.address || "No registrada",
+      
+      // ... resto de datos igual ...
       device: order.device || order.device_name || "Equipo Genérico",
       type: order.type || order.device_type || "General",
       serial: order.serial_number || "S/N",
       counter: order.page_count || "N/A",
-      
-      // Informe
       problem: order.problem || order.reported_failure || "No especificado",
       diagnosis: order.prob_real || "",
       solution: order.sol_real || "",
       obs: order.observations || "",
-      
-      // Costos
       total: order.total_cost || order.cost || 0,
       items: order.items || []
   };
