@@ -3,21 +3,16 @@ import {
     DollarSign, Plus, Search, ArrowUpCircle, ArrowDownCircle,
     FileText, Calendar, TrendingUp, Download, Trash2,
     Info, Calculator, Landmark, Pencil, CreditCard, Banknote, Percent,
-    ShoppingBag, X, AlertTriangle
+    ShoppingBag, X, AlertTriangle, PackageMinus, Store
 } from "lucide-react";
-import { toast } from "sonner"; // 👈 Toast
+import { toast } from "sonner";
 import { useCashFlow } from "../hooks/useCashFlow";
 import { useInventory } from "../hooks/useInventory";
 
 const DOCUMENT_TYPES = [
-    { id: "33", label: "Factura Electrónica" },
-    { id: "34", label: "Factura No Afecta o Exenta" },
     { id: "39", label: "Boleta Electrónica" },
-    { id: "41", label: "Boleta No Afecta o Exenta" },
-    { id: "61", label: "Nota de Crédito" },
-    { id: "BH", label: "Boleta de Honorarios" },
+    { id: "33", label: "Factura Electrónica" },
     { id: "VOU", label: "Voucher / Transbank" },
-    { id: "COM", label: "Comprobante de Gasto" },
     { id: "OTR", label: "Otro" }
 ];
 
@@ -34,6 +29,13 @@ const TAX_CATEGORIES = [
     { id: "G_GENERAL", label: "Gasto General / Otros", type: "expense" }
 ];
 
+// 🔥 LISTA DE BODEGAS ACTUALIZADA
+const WAREHOUSES = [
+    "Bodega Local",
+    "Mercado Libre",
+    "Mercado Full"
+];
+
 const FlujoCaja = () => {
     const { movements, loading, addMovement, updateMovement, deleteMovement } = useCashFlow();
     const { inventory, updateItem } = useInventory();
@@ -48,6 +50,7 @@ const FlujoCaja = () => {
     // UI Helpers
     const [itemSearchTerm, setItemSearchTerm] = useState("");
     const [showItemResults, setShowItemResults] = useState(false);
+    const [selectedItemName, setSelectedItemName] = useState(""); 
 
     // Delete Modal State
     const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
@@ -64,7 +67,7 @@ const FlujoCaja = () => {
         taxAmount: 0,
         totalAmount: 0,
         isTaxable: true,
-        paymentMethod: "Efectivo",
+        paymentMethod: "Mercado Pago",
         receivedAmount: 0,
         commissionAmount: 0,
         isEcommerce: false,
@@ -74,45 +77,70 @@ const FlujoCaja = () => {
     });
 
     const handleSave = async () => {
-        if (!formData.totalAmount || !formData.description) {
-            toast.error("Faltan datos", { description: "Debe ingresar monto y descripción." });
-            return;
+        // En modal E-commerce, validamos receivedAmount
+        if (formData.isEcommerce) {
+            if (!formData.receivedAmount || !formData.description) {
+                toast.error("Faltan datos", { description: "Debe ingresar el monto recibido y descripción." });
+                return;
+            }
+        } else {
+            if (!formData.totalAmount || !formData.description) {
+                toast.error("Faltan datos", { description: "Debe ingresar monto y descripción." });
+                return;
+            }
         }
 
         const promise = (async () => {
-            if (editingId) {
-                await updateMovement(editingId, formData);
-            } else {
-                await addMovement(formData);
+            // 1. PREPARAR DATOS PARA FLUJO DE CAJA
+            let financialData = { ...formData };
+
+            // Si es E-commerce, guardamos lo que RECIBIMOS (Líquido)
+            if (formData.isEcommerce) {
+                financialData = {
+                    ...formData,
+                    totalAmount: formData.receivedAmount, 
+                    netAmount: formData.receivedAmount,   
+                    taxAmount: 0, 
+                    description: `${formData.description} (Venta: $${Number(formData.totalAmount).toLocaleString()} | Comis: $${Number(formData.commissionAmount).toLocaleString()})`
+                };
             }
 
-            // Logic for E-commerce stock deduction
+            // 2. GUARDAR EN BD (FINANZAS)
+            if (editingId) {
+                await updateMovement(editingId, financialData);
+            } else {
+                await addMovement(financialData);
+            }
+
+            // 3. DESCONTAR STOCK (SOLO E-COMMERCE NUEVO)
             if (formData.isEcommerce && formData.itemId && formData.warehouse && !editingId) {
                 const item = inventory.find(i => i.id === formData.itemId);
                 if (item) {
                     const currentStock = item.stocksByWarehouse?.[formData.warehouse] || 0;
+                    
                     if (currentStock >= formData.quantity) {
                         const updatedStocks = {
                             ...item.stocksByWarehouse,
                             [formData.warehouse]: currentStock - formData.quantity
                         };
+                        
                         await updateItem(item.id, { ...item, stocksByWarehouse: updatedStocks });
                     } else {
-                        throw new Error(`Stock insuficiente en ${formData.warehouse}. Venta registrada sin descuento de stock.`);
+                        throw new Error(`¡Stock insuficiente en ${formData.warehouse}! Stock actual: ${currentStock}`);
                     }
                 }
             }
         })();
 
         toast.promise(promise, {
-            loading: 'Guardando movimiento...',
+            loading: 'Procesando...',
             success: () => {
                 setIsModalOpen(false);
                 setIsEcommerceModalOpen(false);
                 resetForm();
-                return 'Movimiento registrado correctamente';
+                return 'Registro exitoso y stock actualizado';
             },
-            error: (err) => `Atención: ${err.message}`
+            error: (err) => `Error: ${err.message}`
         });
     };
 
@@ -123,9 +151,7 @@ const FlujoCaja = () => {
 
     const handleDelete = async () => {
         if (!itemToDelete) return;
-
         const promise = deleteMovement(itemToDelete.id);
-
         toast.promise(promise, {
             loading: 'Eliminando registro...',
             success: () => {
@@ -137,12 +163,13 @@ const FlujoCaja = () => {
         });
     };
 
-    // ... (El resto de funciones auxiliares resetForm, updateAmounts, cálculos se mantienen igual)
     const handleEdit = (mov) => {
         setEditingId(mov.id);
         setFormData(mov);
         if (mov.isEcommerce) {
             setIsEcommerceModalOpen(true);
+            const item = inventory.find(i => i.id === mov.itemId);
+            if(item) setSelectedItemName(item.name);
         } else {
             setIsModalOpen(true);
         }
@@ -160,7 +187,7 @@ const FlujoCaja = () => {
             taxAmount: 0,
             totalAmount: 0,
             isTaxable: true,
-            paymentMethod: "Efectivo",
+            paymentMethod: "Mercado Pago",
             receivedAmount: 0,
             commissionAmount: 0,
             isEcommerce: false,
@@ -170,50 +197,36 @@ const FlujoCaja = () => {
         });
         setEditingId(null);
         setItemSearchTerm("");
+        setSelectedItemName("");
         setShowItemResults(false);
     };
 
     const updateAmounts = (value, field) => {
-        let total = formData.totalAmount;
-        let net = formData.netAmount;
-        let tax = formData.taxAmount;
-        let received = formData.receivedAmount || 0;
-        let commission = formData.commissionAmount || 0;
-
+        let total = formData.totalAmount;     
+        let received = formData.receivedAmount; 
+        
         if (field === 'total') {
             total = parseFloat(value) || 0;
-            if (formData.isTaxable && ["33", "39", "VOU"].includes(formData.docType)) {
-                net = Math.round(total / 1.19);
-                tax = total - net;
-            } else {
-                net = total;
-                tax = 0;
-            }
-            received = total;
-            commission = 0;
-        } else if (field === 'net') {
-            net = parseFloat(value) || 0;
-            if (formData.isTaxable && ["33", "39", "VOU"].includes(formData.docType)) {
-                tax = Math.round(net * 0.19);
-                total = net + tax;
-            } else {
-                total = net;
-                tax = 0;
-            }
-            received = total;
-            commission = 0;
         } else if (field === 'received') {
             received = parseFloat(value) || 0;
-            commission = total - received;
+        }
+
+        const commission = total - received;
+
+        let net = total;
+        let tax = 0;
+        if (formData.isTaxable && ["33", "39", "VOU"].includes(formData.docType)) {
+            net = Math.round(total / 1.19);
+            tax = total - net;
         }
 
         setFormData(prev => ({
             ...prev,
-            netAmount: net,
-            taxAmount: tax,
             totalAmount: total,
             receivedAmount: received,
-            commissionAmount: commission
+            commissionAmount: commission,
+            netAmount: net,
+            taxAmount: tax
         }));
     };
 
@@ -245,7 +258,7 @@ const FlujoCaja = () => {
 
     return (
         <div className="space-y-6 animate-fadeIn pb-20">
-            {/* ... HEADER, STATS, FILTERS (Igual que antes) ... */}
+            {/* Header */}
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                 <div>
                     <h1 className="text-3xl font-black bg-clip-text text-transparent bg-brand-gradient italic uppercase tracking-tighter">
@@ -253,7 +266,7 @@ const FlujoCaja = () => {
                     </h1>
                     <p className="text-slate-400 font-medium flex items-center gap-2">
                         <Landmark size={14} className="text-brand-cyan" />
-                        Movimientos Reales (Conectado a BD)
+                        Control Financiero
                     </p>
                 </div>
                 <div className="flex gap-3 w-full md:w-auto">
@@ -263,7 +276,7 @@ const FlujoCaja = () => {
                             setIsEcommerceModalOpen(true);
                             setFormData(prev => ({ ...prev, isEcommerce: true, category: 'VENTA', paymentMethod: 'Mercado Pago', docType: '39' }));
                         }}
-                        className="flex-1 md:flex-none bg-slate-800 hover:bg-slate-700 transition-all text-white px-6 py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 border border-white/10"
+                        className="flex-1 md:flex-none bg-slate-800 hover:bg-slate-700 transition-all text-white px-6 py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 border border-white/10 shadow-lg"
                     >
                         <ShoppingBag size={20} className="text-brand-cyan" />
                         Venta E-com
@@ -278,6 +291,7 @@ const FlujoCaja = () => {
                 </div>
             </div>
 
+            {/* Stats Cards */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                 <StatCard title="Ingresos Totales" value={`$${totalIncome.toLocaleString()}`} icon={<ArrowUpCircle size={24} className="text-emerald-400" />} />
                 <StatCard title="Egresos Totales" value={`$${totalExpense.toLocaleString()}`} icon={<ArrowDownCircle size={24} className="text-rose-400" />} />
@@ -285,6 +299,7 @@ const FlujoCaja = () => {
                 <StatCard title="Balance Operativo" value={`$${balance.toLocaleString()}`} icon={<DollarSign size={24} className="text-brand-purple" />} />
             </div>
 
+            {/* Payment Methods Breakdown */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 {[
                     { label: 'Efectivo', val: cashBalance, icon: <Banknote size={24} />, col: 'text-emerald-400', bg: 'bg-emerald-500/10' },
@@ -301,6 +316,7 @@ const FlujoCaja = () => {
                 ))}
             </div>
 
+            {/* Filters */}
             <div className="bg-slate-900/50 backdrop-blur-xl p-4 rounded-2xl border border-white/5 flex flex-col md:flex-row gap-4 justify-between">
                 <div className="flex gap-2 items-center">
                     {["Todos", "Ingresos", "Egresos"].map((type) => (
@@ -318,6 +334,7 @@ const FlujoCaja = () => {
                 </div>
             </div>
 
+            {/* Table */}
             <div className="bg-slate-900/50 rounded-2xl border border-white/5 overflow-hidden shadow-2xl">
                 <table className="w-full text-left">
                     <thead className="bg-slate-950/50 text-[10px] uppercase font-black tracking-[0.2em] text-slate-500 border-b border-white/5">
@@ -371,7 +388,7 @@ const FlujoCaja = () => {
                 {filteredMovements.length === 0 && <div className="py-20 text-center text-slate-500 font-medium">Sin movimientos en este periodo.</div>}
             </div>
 
-            {/* ... MODALES CON TOAST YA INTEGRADOS EN handleSave ... */}
+            {/* Modal Estándar (Ingreso/Gasto Manual) */}
             {isModalOpen && (
                 <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-[100] flex items-center justify-center p-4">
                     <div className="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
@@ -405,42 +422,120 @@ const FlujoCaja = () => {
                 </div>
             )}
 
+            {/* 🔥 MODAL E-COMMERCE 🔥 */}
             {isEcommerceModalOpen && (
                 <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-[100] flex items-center justify-center p-4">
-                    <div className="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col max-h-[90vh] border-t-brand-cyan border-t-4">
-                        <div className="p-6 border-b border-white/10 flex justify-between items-center">
-                            <h2 className="text-xl font-black text-white italic uppercase">Venta E-commerce</h2>
+                    <div className="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col max-h-[95vh] border-t-brand-cyan border-t-4">
+                        <div className="p-6 border-b border-white/10 flex justify-between items-center bg-slate-900 sticky top-0 z-10">
+                            <div>
+                                <h2 className="text-xl font-black text-white italic uppercase">Conciliación E-commerce</h2>
+                                <p className="text-[10px] text-slate-400">Salida de Stock + Ingreso de Dinero</p>
+                            </div>
                             <button onClick={() => setIsEcommerceModalOpen(false)}><X className="text-slate-500 hover:text-white" /></button>
                         </div>
-                        <div className="p-6 space-y-4 overflow-y-auto custom-scrollbar">
+                        
+                        <div className="p-6 space-y-5 overflow-y-auto custom-scrollbar">
+                            
+                            {/* 1. SELECCIÓN DE PRODUCTO */}
                             <div className="relative">
-                                <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Producto (Descuenta Stock)</label>
-                                <input type="text" className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" placeholder="Buscar..." value={itemSearchTerm} onChange={(e) => { setItemSearchTerm(e.target.value); setShowItemResults(true); }} />
-                                {showItemResults && (
-                                    <div className="absolute z-10 w-full bg-slate-800 border border-white/10 rounded-xl mt-1 max-h-40 overflow-y-auto">
-                                        {inventory.filter(i => i.name.toLowerCase().includes(itemSearchTerm.toLowerCase())).map(item => (
-                                            <div key={item.id} onClick={() => { setFormData(prev => ({ ...prev, itemId: item.id, description: `Venta Ecom: ${item.name}`, totalAmount: item.price_sell })); updateAmounts(item.price_sell, 'total'); setItemSearchTerm(item.name); setShowItemResults(false); }} className="p-2 hover:bg-white/5 cursor-pointer text-sm text-white border-b border-white/5">
-                                                {item.name} - ${item.price_sell}
-                                            </div>
-                                        ))}
+                                <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1 flex items-center gap-2">
+                                    <PackageMinus size={12} className="text-rose-400" /> 
+                                    1. Producto vendido (Salida Stock)
+                                </label>
+                                {selectedItemName ? (
+                                    <div className="flex gap-2">
+                                        <div className="w-full bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 text-emerald-400 font-bold text-sm">
+                                            {selectedItemName}
+                                        </div>
+                                        <button onClick={() => { setSelectedItemName(""); setItemSearchTerm(""); setFormData(p => ({...p, itemId: ""})); }} className="bg-slate-800 p-3 rounded-xl text-slate-400 hover:text-white border border-white/10"><Trash2 size={16} /></button>
                                     </div>
+                                ) : (
+                                    <>
+                                        <input type="text" className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-brand-cyan" placeholder="Buscar producto..." value={itemSearchTerm} onChange={(e) => { setItemSearchTerm(e.target.value); setShowItemResults(true); }} />
+                                        {showItemResults && (
+                                            <div className="absolute z-20 w-full bg-slate-800 border border-white/10 rounded-xl mt-1 max-h-40 overflow-y-auto shadow-xl">
+                                                {inventory.filter(i => i.name.toLowerCase().includes(itemSearchTerm.toLowerCase())).map(item => (
+                                                    <div key={item.id} onClick={() => { 
+                                                        setFormData(prev => ({ ...prev, itemId: item.id, description: `Venta Ecom: ${item.name}`, totalAmount: item.price_sell })); 
+                                                        setSelectedItemName(item.name); 
+                                                        updateAmounts(item.price_sell, 'total'); 
+                                                        setShowItemResults(false); 
+                                                    }} className="p-3 hover:bg-white/5 cursor-pointer text-sm text-white border-b border-white/5 flex justify-between">
+                                                        <span>{item.name}</span>
+                                                        <span className="text-brand-purple font-bold">${item.price_sell}</span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </>
                                 )}
                             </div>
+
+                            {/* 2. ORIGEN DEL STOCK */}
                             <div className="grid grid-cols-2 gap-4">
-                                <div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Bodega</label><select className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={formData.warehouse} onChange={(e) => setFormData({ ...formData, warehouse: e.target.value })}><option value="Bodega Local">Bodega Local</option><option value="Mercado Libre">Mercado Libre</option></select></div>
-                                <div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Cantidad</label><input type="number" className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={formData.quantity} onChange={(e) => setFormData({ ...formData, quantity: parseInt(e.target.value) })} /></div>
+                                <div>
+                                    <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1 flex items-center gap-2"><Store size={12} /> Descontar de</label>
+                                    <select className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={formData.warehouse} onChange={(e) => setFormData({ ...formData, warehouse: e.target.value })}>
+                                        {WAREHOUSES.map(w => <option key={w} value={w}>{w}</option>)}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Cantidad</label>
+                                    <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none text-center font-mono" value={formData.quantity} onChange={(e) => setFormData({ ...formData, quantity: parseInt(e.target.value) })} />
+                                </div>
                             </div>
-                            <div className="bg-slate-950 p-4 rounded-xl border border-white/5 space-y-4">
-                                <div><label className="text-[10px] font-black text-brand-cyan uppercase block mb-1">Monto Venta</label><input type="number" className="w-full bg-slate-900 border border-brand-cyan/30 rounded-xl p-3 text-white font-black text-xl outline-none" value={formData.totalAmount} onChange={(e) => updateAmounts(e.target.value, 'total')} /></div>
-                                <div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Recibido Real (Líquido)</label><input type="number" className="w-full bg-slate-800 border border-white/5 rounded-xl p-3 text-white outline-none" value={formData.receivedAmount} onChange={(e) => updateAmounts(e.target.value, 'received')} /></div>
-                                <div className="text-xs text-rose-400 font-bold">Comisión: ${formData.commissionAmount}</div>
+
+                            {/* 3. RECUADRO DE CÁLCULO */}
+                            <div className="bg-slate-950 p-5 rounded-2xl border border-white/5 relative overflow-hidden">
+                                <div className="absolute top-0 right-0 p-2 opacity-10"><Calculator size={100} className="text-white" /></div>
+                                <label className="text-[10px] font-bold text-slate-500 uppercase block mb-3 flex items-center gap-2 relative z-10"><DollarSign size={12} /> 2. Conciliación Financiera</label>
+                                
+                                <div className="space-y-3 relative z-10">
+                                    {/* PRECIO VENTA */}
+                                    <div className="flex justify-between items-center">
+                                        <label className="text-xs text-slate-400">Precio Venta (Cliente)</label>
+                                        <div className="flex items-center w-40 bg-slate-900 border border-slate-700 rounded-lg px-2">
+                                            <span className="text-slate-500 mr-1">$</span>
+                                            <input type="number" className="w-full bg-transparent p-2 text-right text-white font-bold outline-none" value={formData.totalAmount} onChange={(e) => updateAmounts(e.target.value, 'total')} />
+                                        </div>
+                                    </div>
+
+                                    {/* MONTO RECIBIDO */}
+                                    <div className="flex justify-between items-center">
+                                        <label className="text-xs text-brand-cyan font-bold">Monto Recibido (Banco)</label>
+                                        <div className="flex items-center w-40 bg-slate-900 border border-brand-cyan/50 rounded-lg px-2 shadow-[0_0_10px_rgba(6,182,212,0.1)]">
+                                            <span className="text-brand-cyan mr-1">$</span>
+                                            <input type="number" className="w-full bg-transparent p-2 text-right text-brand-cyan font-black outline-none" value={formData.receivedAmount} onChange={(e) => updateAmounts(e.target.value, 'received')} />
+                                        </div>
+                                    </div>
+
+                                    <div className="h-px bg-white/10 my-2"></div>
+
+                                    {/* DIFERENCIA (COMISIÓN) */}
+                                    <div className="flex justify-between items-center">
+                                        <label className="text-xs text-rose-400 font-bold">Comisión / Costo Envío</label>
+                                        <div className="text-right font-mono text-rose-400 font-bold">
+                                            - ${formData.commissionAmount.toLocaleString()}
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
-                            <button onClick={handleSave} className="w-full bg-brand-gradient py-4 rounded-xl text-white font-black uppercase tracking-widest shadow-lg hover:opacity-90">Registrar Venta</button>
+
+                            {/* EXTRA INFO */}
+                            <div className="grid grid-cols-2 gap-4">
+                                <div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Medio Pago</label><select className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={formData.paymentMethod} onChange={(e) => setFormData({ ...formData, paymentMethod: e.target.value })}><option value="Mercado Pago">Mercado Pago</option><option value="BancoChile">Banco Chile</option><option value="Webpay">Webpay</option></select></div>
+                                <div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">N° Orden/Doc</label><input type="text" className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={formData.docNumber} onChange={(e) => setFormData({ ...formData, docNumber: e.target.value })} placeholder="Ej: #12345" /></div>
+                            </div>
+
+                            <button onClick={handleSave} className="w-full bg-brand-gradient py-4 rounded-xl text-white font-black uppercase tracking-widest shadow-lg hover:opacity-90">
+                                Confirmar Venta
+                            </button>
                         </div>
                     </div>
                 </div>
             )}
 
+            {/* Delete Confirmation Modal */}
             {isDeleteModalOpen && (
                 <div className="fixed inset-0 bg-slate-950/95 backdrop-blur-md flex items-center justify-center z-[110] p-4">
                     <div className="bg-slate-900 border border-red-500/30 w-full max-w-sm rounded-[2.5rem] shadow-2xl p-8 text-center animate-in fade-in zoom-in duration-300">

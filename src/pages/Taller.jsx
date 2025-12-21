@@ -3,7 +3,8 @@ import {
     Wrench, Plus, Search, CheckCircle2, AlertCircle, MoreVertical,
     Smartphone, Laptop, Tablet, User, Calendar, DollarSign,
     MapPin, Clock, FileText, PenTool, X, Trash2,
-    Save, Monitor, Printer, Cpu, Image, Camera, UserCheck, Banknote, CreditCard, Landmark
+    Save, Monitor, Printer, Cpu, Image, Camera, UserCheck, Banknote, CreditCard, Landmark,
+    Lock 
 } from "lucide-react";
 import { supabase } from "../supabase/client";
 import { toast } from "sonner"; 
@@ -26,7 +27,6 @@ const STATUS_LIST = [
 
 const Taller = () => {
     // --- HOOKS DE DATOS ---
-    // 👇 Extraemos deleteOrder del hook
     const { orders: repairs, loading, createOrder, updateOrder, deleteOrder } = useWorkOrders();
     const { customers: clients } = useCustomers();
     const { equipments: equipmentsList } = useEquipos();
@@ -119,15 +119,17 @@ const Taller = () => {
         setEditingDbId(repair.db_id);
         setActiveTab("order");
 
+        const clientID = repair.customer_id; 
+
         setFormData({
             status: repair.status || "En cola",
             location: repair.location || "Local",
             equipmentId: repair.equipment_id || "", 
             jobType: repair.job_type || "Reparación",
             reportedFault: repair.reported_failure || "", 
-            clientId: repair.customer_id || "", 
+            clientId: clientID || "", 
             technician: repair.technician_name || "",
-            internalNotes: repair.internal_notes || "",
+            internalNotes: repair.internal_notes || "", 
             startDate: repair.start_date ? new Date(repair.start_date).toISOString().slice(0, 16) : "",
             estimatedEndDate: repair.estimated_end_date ? new Date(repair.estimated_end_date).toISOString().slice(0, 16) : "",
             selectedItems: repair.items || [],
@@ -145,7 +147,6 @@ const Taller = () => {
         setIsModalOpen(true);
     };
 
-    // 👇 NUEVA FUNCIÓN PARA ELIMINAR
     const handleDeleteOrder = async (uuid, orderId) => {
         if (window.confirm(`⚠️ ¿Estás seguro de ELIMINAR la orden ${orderId}?\nEsta acción no se puede deshacer.`)) {
             const promise = deleteOrder(uuid);
@@ -157,12 +158,34 @@ const Taller = () => {
         }
     };
 
+    // 🛡️ --- FUNCIÓN DE GUARDADO CON VALIDACIÓN ESTRICTA ---
     const handleSaveOrder = async () => {
-        if (!formData.clientId || !formData.technician) {
-            toast.error("Falta información", { description: "Cliente y Técnico son obligatorios." });
+        // 1. Detectar campos faltantes
+        const missingFields = [];
+
+        if (!formData.clientId) missingFields.push("Cliente");
+        if (!formData.technician) missingFields.push("Técnico");
+        if (!formData.startDate) missingFields.push("Fecha Inicio");
+        if (!formData.estimatedEndDate) missingFields.push("Fecha Término (Est.)");
+        // Equipo: debe tener ID seleccionado O texto manual escrito
+        if (!formData.equipmentId && (!equipSearch || equipSearch.trim() === "")) missingFields.push("Equipo");
+        if (formData.selectedItems.length === 0) missingFields.push("Al menos 1 Item/Servicio");
+        if (!formData.reportedFault || formData.reportedFault.trim() === "") missingFields.push("Falla Reportada");
+
+        // 2. Si hay campos faltantes, mostrar error y detener
+        if (missingFields.length > 0) {
+            toast.error("Faltan datos obligatorios", {
+                description: (
+                    <ul className="list-disc pl-4 mt-2 text-xs">
+                        {missingFields.map(field => <li key={field}>{field}</li>)}
+                    </ul>
+                ),
+                duration: 5000 // Duración más larga para leer
+            });
             return;
         }
 
+        // 3. Procesar datos si todo está correcto
         const totalCost = formData.selectedItems.reduce((acc, item) => acc + (Number(item.price) * (item.quantity || 1)), 0);
         const client = clients.find(c => c.id === formData.clientId);
         const equipment = equipmentsList.find(e => e.id === Number(formData.equipmentId));
@@ -413,7 +436,6 @@ const Taller = () => {
                                         <MoreVertical size={20} />
                                     </button>
 
-                                    {/* 👇 BOTÓN ELIMINAR AGREGADO AQUÍ */}
                                     <button
                                         onClick={() => handleDeleteOrder(repair.db_id, repair.id)}
                                         className="p-2 bg-white/5 hover:bg-red-500/20 rounded-xl text-slate-400 hover:text-red-400 transition-all"
@@ -531,8 +553,22 @@ const Taller = () => {
                                                         </div>
                                                     )}
                                                 </div>
+                                                
                                                 <label className="text-[10px] uppercase font-bold text-slate-500 mb-2 block">Falla Reportada</label>
-                                                <textarea className="w-full h-32 bg-slate-900 border border-slate-700 rounded-lg p-3 text-white resize-none text-sm" value={formData.reportedFault} onChange={(e) => setFormData({ ...formData, reportedFault: e.target.value })}></textarea>
+                                                <textarea className="w-full h-24 bg-slate-900 border border-slate-700 rounded-lg p-3 text-white resize-none text-sm mb-4" value={formData.reportedFault} onChange={(e) => setFormData({ ...formData, reportedFault: e.target.value })}></textarea>
+
+                                                {/* CAMPO NOTAS INTERNAS */}
+                                                <div className="mt-2">
+                                                    <label className="text-[10px] uppercase font-bold text-amber-500 mb-2 block flex items-center gap-2">
+                                                        <Lock size={12} /> Notas Internas (Privado)
+                                                    </label>
+                                                    <textarea
+                                                        className="w-full h-24 bg-slate-900 border border-amber-500/30 rounded-lg p-3 text-white resize-none text-sm focus:border-amber-500 transition-colors"
+                                                        placeholder="Apuntes visibles solo para técnicos..."
+                                                        value={formData.internalNotes}
+                                                        onChange={(e) => setFormData({ ...formData, internalNotes: e.target.value })}
+                                                    ></textarea>
+                                                </div>
                                             </div>
                                     </div>
 
