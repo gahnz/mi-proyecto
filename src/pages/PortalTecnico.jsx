@@ -1,612 +1,394 @@
 import { useState, useEffect, useRef } from "react";
 import SignatureCanvas from 'react-signature-canvas';
-import { useNavigate } from "react-router-dom";
-import {
-    Wrench, ClipboardCheck, Clock, User, CheckCircle2,
-    AlertCircle, ChevronRight, PenTool, Save, X, Search, Cpu, RefreshCw,
-    MessageSquare, ExternalLink, MapPin, Camera, Image, ArrowLeft, Send
+import { 
+  ClipboardList, Search, LogOut, User, ChevronRight, Save, X, 
+  Hash, Printer, PenTool, Camera, Image as ImageIcon, Loader2, FileText,
+  RefreshCw, Eraser, MapPin, Phone, MessageCircle, PlayCircle, CheckCircle2,
+  Send 
 } from "lucide-react";
-import { INITIAL_REPAIRS } from "../data/mockData";
-import { storage } from "../services/storage";
+import { toast } from "sonner";
 import { supabase } from "../supabase/client";
-
-const SHAKE_ANIMATION = `
-@keyframes shake {
-  0%, 100% { transform: translateX(0); }
-  25% { transform: translateX(-5px); }
-  75% { transform: translateX(5px); }
-}
-`;
+import { useNavigate } from "react-router-dom";
+import { useWorkOrders } from "../hooks/useWorkOrders";
+import { generateOrderPDF } from "../utils/pdfGenerator"; 
 
 export default function PortalTecnico() {
-    const navigate = useNavigate();
-    const [selectedTech, setSelectedTech] = useState("");
-    const [userRole, setUserRole] = useState("");
-    const [allTechnicians, setAllTechnicians] = useState([]);
-    const [clients, setClients] = useState([]);
-    const [orders, setOrders] = useState([]);
-    const [loading, setLoading] = useState(false);
-    const [saving, setSaving] = useState(false);
-    const [shakeFields, setShakeFields] = useState(false);
-    const [editingOrder, setEditingOrder] = useState(null);
-    const sigPad = useRef(null);
-    const [reportForm, setReportForm] = useState({
-        probReal: "",
-        solReal: "",
-        obs: "",
-        status: "",
-        photoBefore: null,
-        photoAfter: null,
-        receiverName: "",
-        receiverSignature: null
+  const navigate = useNavigate();
+  const { orders, updateOrder, refresh } = useWorkOrders();
+  
+  const [currentUser, setCurrentUser] = useState(null);
+  const [loadingUser, setLoadingUser] = useState(true);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [selectedOrder, setSelectedOrder] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const sigPad = useRef(null); 
+  const [showSigPad, setShowSigPad] = useState(false);
+
+  const [editForm, setEditForm] = useState({
+    status: "", internalNotes: "", probReal: "", solReal: "", observations: "",
+    serialNumber: "", pageCount: "", receiverName: "", 
+    receiverSignature: "",
+    photoBefore: null, photoAfter: null
+  });
+
+  useEffect(() => {
+    const getUserProfile = async () => {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) { navigate("/login"); return; }
+        const { data: profile } = await supabase.from('profiles').select('full_name, role').eq('id', user.id).single();
+        if (profile) setCurrentUser(profile);
+      } catch (error) { console.error(error); } finally { setLoadingUser(false); }
+    };
+    getUserProfile();
+  }, [navigate]);
+
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+    await refresh();
+    setTimeout(() => setIsRefreshing(false), 500);
+    toast.success("Lista actualizada");
+  };
+
+  // --- FILTRO ACTUALIZADO ---
+  const myOrders = orders.filter(order => {
+    const techNameOrder = (order.technician || "").toLowerCase().trim();
+    const techNameUser = (currentUser?.full_name || "").toLowerCase().trim();
+    
+    // 1. Filtro de asignación (Admin ve todo, Técnico ve lo suyo)
+    const isAssigned = currentUser?.role === 'admin' ? true : techNameOrder === techNameUser;
+    
+    // 2. Filtro de búsqueda
+    const matchesSearch = 
+        (order.customer || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (order.device || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (order.id || "").toLowerCase().includes(searchTerm.toLowerCase());
+
+    // 3. 👇 FILTRO DE ESTADO: SOLO "En cola" O "Trabajando"
+    // Las órdenes "Finalizadas", "Canceladas" o en "Revisión" desaparecen de la lista del técnico.
+    const isActive = ['En cola', 'Trabajando'].includes(order.status);
+
+    return isAssigned && matchesSearch && isActive;
+  });
+
+  const openOrderModal = (order) => {
+    setSelectedOrder(order);
+    const existingSignature = order.receiver_signature || "";
+    
+    setEditForm({
+      status: order.status || "En cola",
+      internalNotes: order.internal_notes || "",
+      probReal: order.prob_real || "",       
+      solReal: order.sol_real || "",         
+      observations: order.observations || "", 
+      serialNumber: order.serial_number || "", 
+      pageCount: order.page_count || "",       
+      receiverName: order.receiver_name || "", 
+      receiverSignature: existingSignature, 
+      photoBefore: order.photo_before || null,
+      photoAfter: order.photo_after || null
     });
 
-    useEffect(() => {
-        checkAuthAndSetTech();
-    }, []);
+    setShowSigPad(!existingSignature);
+  };
 
-    useEffect(() => {
-        if (selectedTech) {
-            loadTechOrders();
-        }
-    }, [selectedTech]);
+  const handleImageUpload = async (event, field) => {
+    try {
+        const file = event.target.files[0];
+        if (!file) return;
+        setUploading(true);
+        const fileExt = file.name.split('.').pop();
+        const fileName = `${selectedOrder.id}_${field}_${Date.now()}.${fileExt}`;
+        const { error: uploadError } = await supabase.storage.from('repair-images').upload(fileName, file);
+        if (uploadError) throw uploadError;
+        const { data: { publicUrl } } = supabase.storage.from('repair-images').getPublicUrl(fileName);
+        setEditForm(prev => ({ ...prev, [field]: publicUrl }));
+        toast.success("Imagen guardada");
+    } catch (error) { toast.error("Error: " + error.message); } finally { setUploading(false); }
+  };
 
-    async function checkAuthAndSetTech() {
-        setLoading(true);
-        const { data: { session } } = await supabase.auth.getSession();
-
-        // Cargar lista de técnicos para el selector de respaldo
-        const { data: techList } = await supabase
-            .from("profiles")
-            .select("full_name")
-            .in("role", ["tecnico", "coordinador", "admin"]);
-
-        if (techList) setAllTechnicians(techList.map(t => t.full_name));
-
-        if (session) {
-            const { data: profile } = await supabase
-                .from("profiles")
-                .select("full_name, role")
-                .eq("id", session.user.id)
-                .single();
-
-            if (profile) {
-                if (profile.full_name) {
-                    setSelectedTech(profile.full_name);
-                }
-                if (profile.role) {
-                    setUserRole(profile.role);
-                }
-            }
-        }
-        setLoading(false);
+  const dataURLtoBlob = (dataURL) => {
+    const arr = dataURL.split(',');
+    const mime = arr[0].match(/:(.*?);/)[1];
+    const bstr = atob(arr[1]);
+    let n = bstr.length;
+    const u8arr = new Uint8Array(n);
+    while(n--){
+        u8arr[n] = bstr.charCodeAt(n);
     }
+    return new Blob([u8arr], {type:mime});
+  }
 
-    const handleLogout = async () => {
-        await supabase.auth.signOut();
-        navigate("/login-tecnico");
-    };
+  const handleSaveUpdate = async (forceStatus = null) => {
+    if (!selectedOrder) return;
+    
+    let finalSignatureUrl = editForm.receiverSignature;
 
-    async function loadTechOrders() {
-        setLoading(true);
-        console.log("Loading orders for:", selectedTech);
-
-        const currentTech = (selectedTech || "").trim();
-
-        // 1. Fetch filtered Work Orders and all Customers from Supabase
-        let query = supabase.from("work_orders").select("*");
-
-        // If not admin/coordinador, filter by technician name in the query
-        if (userRole !== 'admin' && userRole !== 'coordinador') {
-            query = query.eq("technician_name", currentTech);
-        }
-
-        const [{ data: ordersData, error: ordersError }, { data: clientsData }] = await Promise.all([
-            query.order('created_at', { ascending: false }),
-            supabase.from("customers").select("*")
-        ]);
-
-        if (ordersError) {
-            console.error("Error fetching orders:", ordersError);
-            setLoading(false);
-            return;
-        }
-
-        if (clientsData) setClients(clientsData);
-
-        // 2. Map and filter for pending status
-        const techOrders = (ordersData || []).map(o => ({
-            ...o,
-            id: o.display_id || o.id,
-            db_id: o.id,
-            device: o.device_name,
-            problem: o.reported_fault,
-            customer: o.customer_name,
-            technician: o.technician_name
-        })).filter(o =>
-            !["Finalizado y Pagado", "Cancelado", "Finalizado", "Revisión del Coordinador"].includes(o.status)
-        );
-
-        setOrders(techOrders);
-        setLoading(false);
-    }
-
-    const handleOpenReport = (order) => {
-        setEditingOrder(order);
-        setReportForm({
-            probReal: order.prob_real || "",
-            solReal: order.sol_real || "",
-            obs: order.observations || "",
-            status: order.status || "Trabajando",
-            photoBefore: order.photo_before || null,
-            photoAfter: order.photo_after || null,
-            receiverName: order.receiver_name || "",
-            receiverSignature: order.receiver_signature || null
-        });
-    };
-
-    const handleArrive = async () => {
-        if (!editingOrder) return;
-
-        const { error } = await supabase
-            .from("work_orders")
-            .update({ status: "Trabajando" })
-            .eq("id", editingOrder.db_id);
-
-        if (error) {
-            alert("Error al marcar llegada: " + error.message);
-            return;
-        }
-
-        setReportForm(prev => ({ ...prev, status: "Trabajando" }));
-        loadTechOrders();
-    };
-
-    const handleSaveReport = async (forceStatus = null) => {
-        console.log("handleSaveReport CLICKED", forceStatus);
-
-        // If it's a "Send Report", we MUST have the required fields
-        if (forceStatus && (!reportForm.probReal || !reportForm.solReal)) {
-            setShakeFields(true);
-            setTimeout(() => setShakeFields(false), 500);
-            alert("⚠️ NO SE PUEDE ENVIAR: Por favor completa el 'Diagnóstico' y el 'Trabajo Realizado' antes de enviar a revisión.");
-            return;
-        }
-
-        setSaving(true);
+    if (showSigPad && sigPad.current && !sigPad.current.isEmpty()) {
         try {
-            const finalStatus = forceStatus || reportForm.status;
-            console.log("Saving report for order:", editingOrder.db_id, "with status:", finalStatus);
+            const signatureDataUrl = sigPad.current.getCanvas().toDataURL('image/png');
+            const signatureBlob = dataURLtoBlob(signatureDataUrl);
+            const fileName = `${selectedOrder.id}_signature_${Date.now()}.png`;
 
-            const { error } = await supabase
-                .from("work_orders")
-                .update({
-                    prob_real: reportForm.probReal,
-                    sol_real: reportForm.solReal,
-                    observations: reportForm.obs,
-                    status: finalStatus,
-                    photo_before: reportForm.photoBefore,
-                    photo_after: reportForm.photoAfter,
-                    receiver_name: reportForm.receiverName,
-                    receiver_signature: reportForm.receiverSignature
-                })
-                .eq("id", editingOrder.db_id);
+            const { error: uploadError } = await supabase.storage
+                .from('repair-images')
+                .upload(fileName, signatureBlob);
 
-            if (error) throw error;
+            if (uploadError) throw uploadError;
 
-            if (forceStatus) {
-                alert("🚀 Informe enviado a revisión exitosamente.");
-            } else {
-                alert("💾 Cambios guardados temporalmente.");
-            }
+            const { data: { publicUrl } } = supabase.storage
+                .from('repair-images')
+                .getPublicUrl(fileName);
+            
+            finalSignatureUrl = publicUrl;
 
-            setEditingOrder(null);
-            loadTechOrders();
         } catch (error) {
-            console.error("Error saving report:", error);
-            alert("❌ Error: " + (error.message || "Error desconocido"));
-        } finally {
-            setSaving(false);
+            console.error(error);
+            toast.error("Error al guardar la firma");
+            return;
         }
+    }
+
+    const statusToSave = forceStatus || editForm.status;
+
+    const payload = {
+        status: statusToSave,
+        internal_notes: editForm.internalNotes,
+        prob_real: editForm.probReal,
+        sol_real: editForm.solReal,
+        observations: editForm.observations,
+        serial_number: editForm.serialNumber,
+        page_count: editForm.pageCount,
+        receiver_name: editForm.receiverName,
+        receiver_signature: finalSignatureUrl,
+        photo_before: editForm.photoBefore,
+        photo_after: editForm.photoAfter
     };
 
-    // Debugging attachment
-    useEffect(() => {
-        if (typeof window !== 'undefined') {
-            window.debugSaveReport = handleSaveReport;
-        }
-    }, [handleSaveReport]);
+    const promise = updateOrder(selectedOrder.db_id, payload);
+    
+    const successMessage = forceStatus 
+        ? '¡Informe enviado a revisión!' 
+        : '¡Avance guardado correctamente!';
 
-    if (loading) {
-        return (
-            <div className="min-h-screen bg-brand-dark flex flex-col items-center justify-center">
-                <div className="w-16 h-16 border-4 border-brand-purple border-t-transparent rounded-full animate-spin mb-4"></div>
-                <p className="text-slate-500 font-black uppercase tracking-[0.3em] text-[10px] animate-pulse">Sincronizando Perfil...</p>
-            </div>
-        );
-    }
+    toast.promise(promise, {
+        loading: 'Procesando...',
+        success: () => { 
+            setSelectedOrder(null); 
+            refresh(); 
+            return successMessage; 
+        },
+        error: (err) => `Error: ${err.message}`
+    });
+  };
 
-    if (!selectedTech) {
-        return (
-            <div className="min-h-screen bg-brand-dark flex flex-col">
-                <div className="p-8 flex justify-center items-center">
-                    <div className="flex items-center gap-3">
-                        <Cpu className="text-brand-purple" size={32} />
-                        <h1 className="text-2xl font-black text-white italic tracking-tighter uppercase">Portal Técnico</h1>
-                    </div>
-                </div>
+  const handleLogout = async () => { await supabase.auth.signOut(); navigate("/login"); };
 
-                <div className="flex-1 flex items-center justify-center p-4">
-                    <div className="bg-slate-900 border border-white/10 p-10 rounded-[3rem] shadow-2xl text-center max-w-md w-full animate-in zoom-in duration-500">
-                        <div className="w-20 h-20 bg-brand-gradient rounded-3xl flex items-center justify-center mx-auto mb-6 shadow-lg shadow-brand-purple/20">
-                            <Wrench className="text-white" size={40} />
-                        </div>
-                        <h2 className="text-2xl font-black text-white uppercase italic tracking-tighter mb-2">Sin Perfil Asignado</h2>
-                        <p className="text-slate-500 text-sm font-medium mb-8 text-balance">Tu cuenta no tiene un nombre de técnico vinculado. Por favor, selecciona uno o contacta al admin.</p>
+  const getStatusColor = (status) => {
+    if (status === 'En cola') return 'text-blue-400 bg-blue-400/10 border-blue-400/20';
+    if (status === 'Trabajando') return 'text-brand-purple bg-brand-purple/10 border-brand-purple/20';
+    return 'text-slate-400 bg-slate-800 border-white/5';
+  };
 
-                        <div className="grid grid-cols-2 gap-3">
-                            {allTechnicians.map(tech => (
-                                <button
-                                    key={tech}
-                                    onClick={() => setSelectedTech(tech)}
-                                    className="p-4 bg-slate-950 border border-white/5 rounded-2xl text-white font-bold hover:border-brand-purple hover:bg-brand-purple/10 transition-all uppercase tracking-widest text-[10px]"
-                                >
-                                    {tech}
-                                </button>
-                            ))}
-                        </div>
-                    </div>
-                </div>
-            </div>
-        );
-    }
+  const clearSignature = () => {
+      if(sigPad.current) sigPad.current.clear();
+  };
 
-    return (
-        <div className="min-h-screen bg-brand-dark p-6 md:p-10 space-y-6 animate-in fade-in duration-500">
-            {/* HEADER */}
-            <div className="flex justify-between items-center bg-slate-900/40 p-6 rounded-[2rem] border border-white/5">
-                <div className="flex items-center gap-4">
-                    <div className="w-12 h-12 bg-brand-purple/20 rounded-2xl flex items-center justify-center text-brand-purple border border-brand-purple/30">
-                        <PenTool size={24} />
-                    </div>
-                    <div>
-                        <p className="text-[10px] text-brand-purple font-black uppercase tracking-[0.2em]">Sesión Iniciada</p>
-                        <h2 className="text-2xl font-black text-white italic tracking-tighter uppercase">{selectedTech}</h2>
-                    </div>
-                </div>
-                <div className="flex gap-3">
-                    <button
-                        onClick={loadTechOrders}
-                        disabled={loading}
-                        className="p-3 bg-slate-800 text-slate-400 hover:text-brand-cyan rounded-xl transition-all border border-white/5 disabled:opacity-50"
-                        title="Actualizar Órdenes"
-                    >
-                        <RefreshCw size={20} className={loading ? "animate-spin" : ""} />
-                    </button>
-                    <button
-                        onClick={handleLogout}
-                        className="px-6 py-2 bg-rose-500/10 text-rose-500 border border-rose-500/20 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-rose-500 hover:text-white transition-all"
-                    >
-                        Cerrar Sesión
-                    </button>
-                </div>
-            </div>
+  const cleanPhone = (phone) => {
+    if(!phone) return "";
+    return phone.replace(/[^0-9]/g, ''); 
+  };
 
-            {/* PENDING TASKS LIST */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {orders.length === 0 ? (
-                    <div className="col-span-full py-20 bg-slate-900/20 rounded-[3rem] border border-dashed border-white/10 text-center flex flex-col items-center">
-                        <div className="w-20 h-20 bg-slate-800 rounded-full flex items-center justify-center mb-6 text-slate-600">
-                            <ClipboardCheck size={40} />
-                        </div>
-                        <h3 className="text-xl font-black text-white uppercase italic tracking-tighter mb-2">No hay trabajos aquí</h3>
-                        <p className="text-slate-400 font-bold uppercase tracking-widest text-[10px] mb-6 max-w-xs mx-auto">
-                            No encontramos servicios pendientes para: <span className="text-brand-purple">"{selectedTech}"</span>
-                        </p>
-                        <div className="space-y-3">
-                            <p className="text-slate-600 text-[10px] uppercase font-medium">Sugerencias:</p>
-                            <ul className="text-[10px] text-slate-500 space-y-1">
-                                <li>• Revisa que el técnico en la OT sea exactamente "{selectedTech}"</li>
-                                <li>• Asegúrate que el estado de la OT no sea "Finalizado"</li>
-                                <li>• Usa el botón de refrescar arriba a la derecha</li>
-                            </ul>
-                        </div>
-                    </div>
-                ) : (
-                    orders.map(order => (
-                        <div key={order.id} className="bg-slate-900 border border-white/5 rounded-3xl p-6 hover:border-brand-cyan/30 transition-all group flex flex-col justify-between">
-                            <div>
-                                <div className="flex justify-between items-start mb-4">
-                                    <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest ${order.status === 'Trabajando' ? 'bg-orange-500/20 text-orange-500 border border-orange-500/30' :
-                                        order.status === 'En cola' ? 'bg-blue-500/20 text-blue-500 border border-blue-500/30' : 'bg-slate-800 text-slate-400'
-                                        }`}>
-                                        {order.status}
-                                    </span>
-                                    <span className="text-[10px] font-mono text-slate-600">ID: {order.id}</span>
-                                </div>
-                                <h3 className="text-lg font-black text-white uppercase tracking-tight mb-1">{order.device || order.equipmentName || "Equipo Celular"}</h3>
-                                <p className="text-xs text-slate-400 mb-4 flex items-center gap-2">
-                                    <AlertCircle size={12} className="text-rose-500" />
-                                    Falla: {order.problem || order.reportedFault}
-                                </p>
+  const handleStartWork = () => {
+    setEditForm({ ...editForm, status: 'Trabajando' });
+    toast.success("¡Comenzando trabajo! Estado actualizado.");
+  };
 
-                                {order.probReal && (
-                                    <div className="p-3 bg-emerald-500/5 border border-emerald-500/10 rounded-xl mb-4">
-                                        <p className="text-[9px] font-black text-emerald-500 uppercase mb-1">Diagnóstico Actual</p>
-                                        <p className="text-[11px] text-slate-300 italic">"{order.solReal}"</p>
-                                    </div>
-                                )}
-                            </div>
+  if (loadingUser) return <div className="h-screen flex items-center justify-center text-slate-500 animate-pulse">Cargando...</div>;
 
-                            <button
-                                onClick={() => handleOpenReport(order)}
-                                className="w-full mt-4 bg-slate-800 hover:bg-brand-cyan hover:text-white text-slate-300 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2"
-                            >
-                                <PenTool size={14} />
-                                Actualizar Informe
-                            </button>
-                        </div>
-                    ))
-                )}
-            </div>
-
-            {/* MODAL: TECHNICAL REPORT */}
-            {editingOrder && (
-                <div className="fixed inset-0 bg-slate-950/95 backdrop-blur-md z-[100] flex items-center justify-center p-4">
-                    <div className="bg-slate-900 border border-white/10 w-full max-w-xl rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in duration-300 flex flex-col max-h-[90vh]">
-                        <div className="p-8 border-b border-white/5 flex justify-between items-center bg-slate-950/40">
-                            <div className="flex items-center gap-4">
-                                <div className="w-12 h-12 bg-brand-gradient rounded-2xl flex items-center justify-center text-white">
-                                    <PenTool size={24} />
-                                </div>
-                                <div>
-                                    <h3 className="text-xl font-black text-white italic tracking-tighter uppercase">Informe Técnico</h3>
-                                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Orden #{editingOrder.id}</p>
-                                </div>
-                            </div>
-                            <button onClick={() => setEditingOrder(null)} className="p-2 bg-slate-800 text-slate-500 hover:text-white rounded-xl transition-all"><X size={24} /></button>
-                        </div>
-
-                        <div className="p-8 space-y-6 overflow-y-auto custom-scrollbar flex-1">
-                            {/* CLIENT CONTACT INFO SECTION */}
-                            {(() => {
-                                const client = clients.find(c => String(c.id) === String(editingOrder.customer_id));
-                                if (!client) return (
-                                    <div className="p-4 bg-slate-950/30 rounded-2xl text-xs text-slate-500 italic text-center border border-dashed border-white/5">
-                                        Información de cliente no disponible (ID: {editingOrder.customer_id})
-                                    </div>
-                                );
-                                return (
-                                    <div className="bg-slate-950/50 border border-white/5 rounded-3xl p-6 space-y-4">
-                                        <div className="flex justify-between items-start">
-                                            <div>
-                                                <p className="text-[10px] font-black text-brand-purple uppercase tracking-widest mb-1">Información del Cliente</p>
-                                                <h4 className="text-lg font-black text-white italic uppercase tracking-tight">
-                                                    {client.type === 'Empresa' ? client.business_name : client.full_name}
-                                                </h4>
-                                            </div>
-                                            {client.phone && (
-                                                <a
-                                                    href={`https://wa.me/${client.phone.replace(/\D/g, '')}`}
-                                                    target="_blank"
-                                                    rel="noreferrer"
-                                                    className="p-3 bg-emerald-500/10 text-emerald-500 rounded-2xl border border-emerald-500/20 hover:bg-emerald-500 hover:text-white transition-all flex items-center gap-2 text-[10px] font-black uppercase tracking-widest"
-                                                >
-                                                    <MessageSquare size={16} /> WhatsApp
-                                                </a>
-                                            )}
-                                        </div>
-
-                                        <div className="flex items-center gap-4 pt-4 border-t border-white/5">
-                                            <div className="flex-1">
-                                                <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-0.5">Ubicación del Servicio</p>
-                                                <p className="text-xs text-slate-300 font-medium line-clamp-1">{client.address || 'Sin dirección registrada'}</p>
-                                            </div>
-                                            {client.address && (
-                                                <a
-                                                    href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${client.address}, ${client.comuna || ''}, ${client.region || ''}`)}`}
-                                                    target="_blank"
-                                                    rel="noreferrer"
-                                                    className="p-3 bg-brand-cyan/10 text-brand-cyan rounded-2xl border border-brand-cyan/20 hover:bg-brand-cyan hover:text-white transition-all"
-                                                    title="Ver en Google Maps"
-                                                >
-                                                    <MapPin size={18} />
-                                                </a>
-                                            )}
-                                        </div>
-                                    </div>
-                                );
-                            })()}
-
-                            {/* ARRIVAL BUTTON */}
-                            {reportForm.status === "En cola" && (
-                                <button
-                                    onClick={handleArrive}
-                                    className="w-full py-4 bg-emerald-500 text-white font-black uppercase tracking-[0.2em] rounded-2xl shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-3 animate-pulse"
-                                >
-                                    <MapPin size={24} />
-                                    ¡Llegué! (Empezar Trabajo)
-                                </button>
-                            )}
-
-                            {reportForm.status !== "En cola" && (
-                                <div>
-                                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 block ml-1">Estado de Reparación</label>
-                                    <div className="grid grid-cols-2 gap-2">
-                                        {["En cola", "Trabajando", "Esperando Repuesto", "Listo para Retiro"].map(s => (
-                                            <button
-                                                key={s}
-                                                onClick={() => setReportForm({ ...reportForm, status: s })}
-                                                className={`py-3 rounded-xl text-[10px] font-black uppercase transition-all border ${reportForm.status === s ? 'bg-brand-purple border-brand-purple text-white' : 'bg-slate-950 border-white/5 text-slate-600 hover:text-white'}`}
-                                            >
-                                                {s}
-                                            </button>
-                                        ))}
-                                    </div>
-                                </div>
-                            )}
-
-                            <div className="space-y-4">
-                                <div>
-                                    <label className={`text-[10px] font-black uppercase tracking-widest mb-2 block ml-1 ${!reportForm.probReal && shakeFields ? 'text-rose-500 animate-pulse' : 'text-emerald-500'}`}>
-                                        Diagnóstico (Problema Real) * {!reportForm.probReal && shakeFields && "(OBLIGATORIO)"}
-                                    </label>
-                                    <textarea
-                                        className={`w-full bg-slate-950 border rounded-2xl p-4 text-white text-sm outline-none transition-all min-h-[100px] ${!reportForm.probReal && shakeFields ? 'border-rose-500 bg-rose-500/5 animate-[shake_0.5s_ease-in-out]' : 'border-white/5 focus:border-emerald-500/50'}`}
-                                        placeholder="Escribe el diagnóstico exacto detectado..."
-                                        value={reportForm.probReal}
-                                        onChange={(e) => setReportForm({ ...reportForm, probReal: e.target.value })}
-                                    />
-                                </div>
-                                <div>
-                                    <label className={`text-[10px] font-black uppercase tracking-widest mb-2 block ml-1 ${!reportForm.solReal && shakeFields ? 'text-rose-500 animate-pulse' : 'text-brand-cyan'}`}>
-                                        Trabajo Realizado (Solución) * {!reportForm.solReal && shakeFields && "(OBLIGATORIO)"}
-                                    </label>
-                                    <textarea
-                                        className={`w-full bg-slate-950 border rounded-2xl p-4 text-white text-sm outline-none transition-all min-h-[100px] ${!reportForm.solReal && shakeFields ? 'border-rose-500 bg-rose-500/5 animate-[shake_0.5s_ease-in-out]' : 'border-white/5 focus:border-brand-cyan/50'}`}
-                                        placeholder="Describe qué reparaste o cambiaste..."
-                                        value={reportForm.solReal}
-                                        onChange={(e) => setReportForm({ ...reportForm, solReal: e.target.value })}
-                                    />
-                                </div>
-                                <div>
-                                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 block ml-1">Observaciones Internas (Opcional)</label>
-                                    <textarea
-                                        className="w-full bg-slate-950 border border-white/5 rounded-2xl p-4 text-slate-400 text-sm outline-none focus:border-white/20 transition-all min-h-[80px]"
-                                        placeholder="Detalles solo para el equipo..."
-                                        value={reportForm.obs}
-                                        onChange={(e) => setReportForm({ ...reportForm, obs: e.target.value })}
-                                    />
-                                </div>
-
-                                {/* PHOTOS SECTION */}
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div className="space-y-2">
-                                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Antes</label>
-                                        <div className="relative aspect-square rounded-2xl border-2 border-dashed border-white/10 bg-slate-950 flex flex-col items-center justify-center overflow-hidden">
-                                            {reportForm.photoBefore ? (
-                                                <>
-                                                    <img src={reportForm.photoBefore} className="w-full h-full object-cover" />
-                                                    <button onClick={() => setReportForm({ ...reportForm, photoBefore: null })} className="absolute top-2 right-2 p-1 bg-red-500 rounded-lg text-white"><X size={14} /></button>
-                                                </>
-                                            ) : (
-                                                <div className="text-center p-2 relative">
-                                                    <Camera size={24} className="mx-auto mb-1 text-slate-700" />
-                                                    <p className="text-[8px] text-slate-600 font-bold uppercase">Foto Antes</p>
-                                                    <input type="file" accept="image/*" capture="environment" className="absolute inset-0 opacity-0" onChange={(e) => {
-                                                        const file = e.target.files[0];
-                                                        if (file) {
-                                                            const reader = new FileReader();
-                                                            reader.onloadend = () => setReportForm({ ...reportForm, photoBefore: reader.result });
-                                                            reader.readAsDataURL(file);
-                                                        }
-                                                    }} />
-                                                </div>
-                                            )}
-                                        </div>
-                                    </div>
-                                    <div className="space-y-2">
-                                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Después</label>
-                                        <div className="relative aspect-square rounded-2xl border-2 border-dashed border-white/10 bg-slate-950 flex flex-col items-center justify-center overflow-hidden">
-                                            {reportForm.photoAfter ? (
-                                                <>
-                                                    <img src={reportForm.photoAfter} className="w-full h-full object-cover" />
-                                                    <button onClick={() => setReportForm({ ...reportForm, photoAfter: null })} className="absolute top-2 right-2 p-1 bg-red-500 rounded-lg text-white"><X size={14} /></button>
-                                                </>
-                                            ) : (
-                                                <div className="text-center p-2 relative">
-                                                    <Camera size={24} className="mx-auto mb-1 text-slate-700" />
-                                                    <p className="text-[8px] text-slate-600 font-bold uppercase">Foto Después</p>
-                                                    <input type="file" accept="image/*" capture="environment" className="absolute inset-0 opacity-0" onChange={(e) => {
-                                                        const file = e.target.files[0];
-                                                        if (file) {
-                                                            const reader = new FileReader();
-                                                            reader.onloadend = () => setReportForm({ ...reportForm, photoAfter: reader.result });
-                                                            reader.readAsDataURL(file);
-                                                        }
-                                                    }} />
-                                                </div>
-                                            )}
-                                        </div>
-                                    </div>
-                                </div>
-
-                                {/* RECEPTION SECTION */}
-                                <div className="p-6 bg-slate-950 rounded-3xl border border-white/5 space-y-4">
-                                    <div className="flex items-center gap-2 mb-2">
-                                        <User size={16} className="text-brand-purple" />
-                                        <h4 className="text-[10px] font-black text-white uppercase tracking-widest">Recepción de Cliente</h4>
-                                    </div>
-                                    <input
-                                        type="text"
-                                        placeholder="Nombre quien recibe..."
-                                        className="w-full bg-slate-900 border border-white/5 rounded-xl py-3 px-4 text-white text-sm outline-none focus:border-brand-purple"
-                                        value={reportForm.receiverName}
-                                        onChange={(e) => setReportForm({ ...reportForm, receiverName: e.target.value })}
-                                    />
-                                    <div className="relative rounded-xl border border-dashed border-white/10 bg-slate-900 overflow-hidden">
-                                        {reportForm.receiverSignature ? (
-                                            <div className="relative h-32 flex items-center justify-center">
-                                                <img src={reportForm.receiverSignature} className="h-full object-contain" alt="Firma" />
-                                                <button onClick={() => setReportForm({ ...reportForm, receiverSignature: null })} className="absolute top-2 right-2 p-1.5 bg-red-500 rounded-lg text-white shadow-lg"><X size={14} /></button>
-                                            </div>
-                                        ) : (
-                                            <div className="flex flex-col">
-                                                <div className="bg-white rounded-t-xl">
-                                                    <SignatureCanvas
-                                                        ref={sigPad}
-                                                        penColor='black'
-                                                        canvasProps={{
-                                                            className: 'w-full h-32 cursor-crosshair'
-                                                        }}
-                                                    />
-                                                </div>
-                                                <div className="flex border-t border-white/5 bg-slate-900">
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => sigPad.current.clear()}
-                                                        className="flex-1 py-3 text-[10px] font-black uppercase text-slate-500 hover:text-white border-r border-white/5 transition-all"
-                                                    >
-                                                        Borrar
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => {
-                                                            if (sigPad.current.isEmpty()) return;
-                                                            setReportForm({ ...reportForm, receiverSignature: sigPad.current.toDataURL('image/png') });
-                                                        }}
-                                                        className="flex-1 py-3 text-[10px] font-black uppercase text-brand-cyan hover:bg-brand-cyan/10 transition-all"
-                                                    >
-                                                        Confirmar Firma
-                                                    </button>
-                                                </div>
-                                            </div>
-                                        )}
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div className="p-6 bg-slate-950/60 border-t border-white/5 grid grid-cols-2 gap-3">
-                            <button
-                                onClick={() => handleSaveReport()}
-                                disabled={saving}
-                                className="py-4 bg-slate-700/50 text-slate-300 font-black uppercase tracking-widest rounded-2xl border border-white/5 hover:bg-slate-700 hover:text-white transition-all disabled:opacity-50 flex items-center justify-center gap-2"
-                            >
-                                <Save size={16} /> {saving ? "..." : "Guardar"}
-                            </button>
-                            <button
-                                onClick={() => handleSaveReport("Revisión del Coordinador")}
-                                disabled={saving}
-                                className="py-4 bg-brand-gradient text-white font-black uppercase tracking-widest rounded-2xl shadow-xl shadow-brand-purple/20 hover:scale-[1.02] active:scale-95 transition-all disabled:opacity-50 flex items-center justify-center gap-2 italic"
-                            >
-                                <Send size={16} /> {saving ? "..." : "Enviar Informe"}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
-            <style>{SHAKE_ANIMATION}</style>
+  return (
+    <div className="min-h-screen bg-slate-950 pb-20">
+      {/* HEADER */}
+      <div className="bg-slate-900/80 backdrop-blur-md border-b border-white/10 p-4 sticky top-0 z-20 shadow-xl">
+        <div className="flex justify-between items-center mb-4">
+          <div>
+            <h1 className="text-xl font-black text-white italic uppercase tracking-tighter">Portal Técnico</h1>
+            <p className="text-[10px] text-brand-purple font-bold uppercase tracking-widest flex items-center gap-1"><User size={10} /> {currentUser?.full_name}</p>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={handleRefresh} className={`p-2 bg-slate-800 rounded-full text-brand-cyan hover:bg-brand-cyan/20 transition-all ${isRefreshing ? 'animate-spin' : ''}`}><RefreshCw size={18} /></button>
+            <button onClick={handleLogout} className="p-2 bg-slate-800 rounded-full text-slate-400 hover:text-white hover:bg-red-500/20 transition-all"><LogOut size={18} /></button>
+          </div>
         </div>
-    );
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={16} />
+          <input type="text" placeholder="Buscar orden..." className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2.5 pl-10 pr-4 text-white text-sm outline-none focus:border-brand-purple transition-all" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+        </div>
+      </div>
+
+      {/* LISTA DE TRABAJOS (FILTRADA) */}
+      <div className="p-4 space-y-4">
+        <h2 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Mis Asignaciones ({myOrders.length})</h2>
+        {myOrders.length === 0 ? ( <div className="text-center py-10 opacity-50 text-sm">No tienes órdenes activas.<br/>¡Buen trabajo! 🎉</div> ) : (
+            myOrders.map(order => (
+            <div key={order.db_id} onClick={() => openOrderModal(order)} className="bg-slate-900 border border-white/5 rounded-2xl p-4 active:scale-[0.98] transition-all cursor-pointer hover:border-brand-purple/30 shadow-lg relative overflow-hidden group">
+                <div className={`absolute left-0 top-0 bottom-0 w-1 ${order.status === 'Trabajando' ? 'bg-brand-purple' : 'bg-slate-700'}`}></div>
+                <div className="flex justify-between items-start mb-2 pl-2">
+                <span className="text-[10px] font-black text-slate-500 bg-slate-950 px-2 py-1 rounded-md border border-white/5 tracking-wider">{order.id}</span>
+                <span className={`text-[9px] font-bold px-2 py-1 rounded-full border ${getStatusColor(order.status)} uppercase tracking-wide`}>{order.status}</span>
+                </div>
+                <div className="pl-2 pr-10">
+                <h3 className="text-white font-bold text-lg leading-tight mb-1">{order.device}</h3>
+                <p className="text-slate-400 text-xs line-clamp-2 mb-3">"{order.problem}"</p>
+                </div>
+                <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-3">
+                    <button onClick={(e) => { e.stopPropagation(); generateOrderPDF(order); }} className="p-2 bg-slate-800/80 rounded-full text-slate-400 hover:text-brand-cyan hover:bg-slate-700 transition-all z-10 border border-white/5"><FileText size={18} /></button>
+                    <ChevronRight size={20} className="text-slate-600 group-hover:text-brand-purple transition-colors" />
+                </div>
+            </div>
+            ))
+        )}
+      </div>
+
+      {/* MODAL */}
+      {selectedOrder && (
+        <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-sm z-50 flex justify-end animate-in fade-in duration-200">
+          <div className="w-full md:w-[500px] bg-slate-900 h-full border-l border-white/10 shadow-2xl flex flex-col animate-in slide-in-from-right duration-300">
+            <div className="p-5 border-b border-white/10 flex justify-between items-center bg-slate-900">
+              <div><h2 className="text-lg font-black text-white italic uppercase tracking-tighter">{selectedOrder.id}</h2><p className="text-xs text-slate-400">{selectedOrder.device}</p></div>
+              <button onClick={() => setSelectedOrder(null)} className="p-2 hover:bg-white/10 rounded-full text-slate-400 hover:text-white"><X size={24} /></button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-5 space-y-6 custom-scrollbar">
+              
+              {/* DATOS DEL CLIENTE */}
+              <div className="bg-slate-950 p-4 rounded-xl border border-white/5 space-y-3">
+                 <label className="text-[10px] font-black text-brand-purple uppercase tracking-widest mb-1 block flex items-center gap-2">
+                    <User size={12} /> Cliente
+                 </label>
+                 <div>
+                    <h3 className="text-white font-bold text-lg leading-tight">{selectedOrder.customer}</h3>
+                    <div className="flex flex-col gap-2 mt-3">
+                        <div className="flex items-start gap-3 text-slate-400 text-xs">
+                            <MapPin size={14} className="text-brand-cyan mt-0.5 shrink-0" />
+                            <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(selectedOrder.location || "")}`} target="_blank" rel="noopener noreferrer" className="hover:text-white hover:underline leading-tight">
+                                {selectedOrder.location || "Sin dirección registrada"}
+                            </a>
+                        </div>
+                        <div className="flex items-center gap-3 text-slate-400 text-xs">
+                            <Phone size={14} className="text-brand-cyan shrink-0" />
+                            <span>{selectedOrder.customer_phone || "Sin teléfono"}</span>
+                            {selectedOrder.customer_phone && (
+                                <a href={`https://wa.me/${cleanPhone(selectedOrder.customer_phone)}`} target="_blank" rel="noopener noreferrer" className="bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500 hover:text-white px-2 py-1 rounded-md flex items-center gap-1 transition-all ml-auto font-bold border border-emerald-500/30"><MessageCircle size={12} /> WhatsApp</a>
+                            )}
+                        </div>
+                    </div>
+                 </div>
+              </div>
+
+              {/* GESTIÓN DE ESTADO */}
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Estado de la Orden</label>
+                
+                {editForm.status === 'En cola' ? (
+                    <button 
+                        onClick={handleStartWork}
+                        className="w-full bg-brand-cyan/20 border border-brand-cyan/50 text-brand-cyan hover:bg-brand-cyan hover:text-black py-4 rounded-xl flex items-center justify-center gap-3 transition-all group shadow-[0_0_15px_rgba(6,182,212,0.3)] animate-pulse"
+                    >
+                        <PlayCircle size={24} className="group-hover:scale-110 transition-transform" />
+                        <span className="font-black text-lg uppercase tracking-wider">¡Llegué! Comenzar</span>
+                    </button>
+                ) : (
+                    <div className={`w-full py-4 rounded-xl flex items-center justify-center gap-2 border ${getStatusColor(editForm.status)} bg-opacity-20`}>
+                        <CheckCircle2 size={20} />
+                        <span className="font-bold text-lg uppercase tracking-wider">{editForm.status}</span>
+                    </div>
+                )}
+              </div>
+
+              {/* EVIDENCIA */}
+              <div className="bg-slate-950 p-4 rounded-xl border border-white/5 space-y-4">
+                 <label className="text-[10px] font-black text-brand-purple uppercase tracking-widest mb-2 block flex items-center gap-2"><Camera size={12} /> Evidencia</label>
+                 <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase block text-center">Ingreso</label>
+                        <div className="relative aspect-square bg-slate-900 rounded-xl border-2 border-dashed border-white/10 hover:border-brand-purple/50 transition-all flex flex-col items-center justify-center overflow-hidden">
+                            {uploading ? <Loader2 className="animate-spin text-brand-purple" /> : ( editForm.photoBefore ? <img src={editForm.photoBefore} className="w-full h-full object-cover" /> : <ImageIcon className="text-slate-600 mb-2" /> )}
+                            <input type="file" accept="image/*" capture="environment" className="absolute inset-0 opacity-0 cursor-pointer" onChange={(e) => handleImageUpload(e, 'photoBefore')} disabled={uploading} />
+                        </div>
+                    </div>
+                    <div className="space-y-2">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase block text-center">Salida</label>
+                        <div className="relative aspect-square bg-slate-900 rounded-xl border-2 border-dashed border-white/10 hover:border-emerald-500/50 transition-all flex flex-col items-center justify-center overflow-hidden">
+                            {uploading ? <Loader2 className="animate-spin text-emerald-500" /> : ( editForm.photoAfter ? <img src={editForm.photoAfter} className="w-full h-full object-cover" /> : <ImageIcon className="text-slate-600 mb-2" /> )}
+                            <input type="file" accept="image/*" capture="environment" className="absolute inset-0 opacity-0 cursor-pointer" onChange={(e) => handleImageUpload(e, 'photoAfter')} disabled={uploading} />
+                        </div>
+                    </div>
+                 </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4 bg-slate-950 p-4 rounded-xl border border-white/5">
+                <div className="col-span-2 text-[10px] font-black text-brand-purple uppercase tracking-widest mb-1 flex items-center gap-2"><Printer size={12} /> Datos Técnicos</div>
+                <div><label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">N° Serie</label><div className="relative"><Hash size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" /><input className="w-full bg-slate-900 border border-white/10 rounded-lg py-2.5 pl-9 pr-2 text-white text-xs font-mono outline-none focus:border-brand-purple" placeholder="S/N..." value={editForm.serialNumber} onChange={(e) => setEditForm({...editForm, serialNumber: e.target.value})} /></div></div>
+                <div><label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Contador</label><div className="relative"><ClipboardList size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" /><input className="w-full bg-slate-900 border border-white/10 rounded-lg py-2.5 pl-9 pr-2 text-white text-xs font-mono outline-none focus:border-brand-purple" placeholder="12345..." value={editForm.pageCount} onChange={(e) => setEditForm({...editForm, pageCount: e.target.value})} /></div></div>
+              </div>
+
+              <div className="space-y-4">
+                <div><label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1 block">Diagnóstico Real</label><textarea className="w-full bg-slate-950 border border-white/10 rounded-xl p-3 text-white text-sm outline-none focus:border-brand-purple h-24 resize-none" value={editForm.probReal} onChange={(e) => setEditForm({...editForm, probReal: e.target.value})} /></div>
+                <div><label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1 block">Solución Aplicada</label><textarea className="w-full bg-slate-950 border border-white/10 rounded-xl p-3 text-white text-sm outline-none focus:border-brand-cyan h-24 resize-none" value={editForm.solReal} onChange={(e) => setEditForm({...editForm, solReal: e.target.value})} /></div>
+                <div><label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1 block">Observaciones</label><textarea className="w-full bg-slate-950 border border-white/10 rounded-xl p-3 text-slate-300 text-sm outline-none focus:border-white/30 h-16 resize-none" value={editForm.observations} onChange={(e) => setEditForm({...editForm, observations: e.target.value})} /></div>
+              </div>
+
+              <div className="bg-slate-950 p-4 rounded-xl border border-white/5 space-y-3">
+                 <label className="text-[10px] font-black text-emerald-500 uppercase tracking-widest mb-2 block flex items-center gap-2"><PenTool size={12} /> Recepción Conforme</label>
+                 <div><label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Nombre Quien Recibe</label><input className="w-full bg-slate-900 border border-white/10 rounded-lg p-3 text-white text-sm outline-none focus:border-emerald-500" placeholder="Nombre completo..." value={editForm.receiverName} onChange={(e) => setEditForm({...editForm, receiverName: e.target.value})} /></div>
+                 
+                 <div>
+                    <div className="flex justify-between items-center mb-1">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase">Firma del Cliente</label>
+                        {!showSigPad && editForm.receiverSignature && ( <button onClick={() => setShowSigPad(true)} className="text-[10px] text-brand-cyan hover:underline">Cambiar Firma</button> )}
+                        {showSigPad && ( <button onClick={clearSignature} className="text-[10px] text-red-400 hover:text-red-300 flex items-center gap-1"><Eraser size={10} /> Borrar</button> )}
+                    </div>
+                    {showSigPad ? (
+                        <div className="border border-white/10 rounded-xl overflow-hidden bg-slate-100">
+                            <SignatureCanvas ref={sigPad} penColor="black" canvasProps={{ className: 'sigCanvas w-full h-32' }} />
+                        </div>
+                    ) : (
+                        editForm.receiverSignature ? (
+                            <div className="bg-white rounded-xl p-2 border border-white/10"><img src={editForm.receiverSignature} alt="Firma Cliente" className="h-20 mx-auto" /></div>
+                        ) : (
+                            <div className="h-32 border border-dashed border-white/10 rounded-xl flex items-center justify-center text-slate-600 text-xs">Sin firma registrada. <button onClick={() => setShowSigPad(true)} className="ml-1 text-brand-purple font-bold">Firmar ahora</button></div>
+                        )
+                    )}
+                 </div>
+              </div>
+
+            </div>
+
+            {/* FOOTER: 2 BOTONES */}
+            <div className="p-5 border-t border-white/10 bg-slate-900 grid grid-cols-2 gap-3">
+              {/* BOTÓN 1: GUARDAR AVANCE */}
+              <button 
+                onClick={() => handleSaveUpdate()} 
+                className="w-full bg-slate-800 text-slate-200 border border-white/10 py-3.5 rounded-xl font-bold uppercase text-xs tracking-widest hover:bg-slate-700 active:scale-[0.98] transition-all flex items-center justify-center gap-2"
+              >
+                <Save size={16} /> Guardar Avance
+              </button>
+
+              {/* BOTÓN 2: ENVIAR INFORME */}
+              <button 
+                onClick={() => handleSaveUpdate('Revisión del Coordinador')} 
+                className="w-full bg-brand-gradient text-white py-3.5 rounded-xl font-black uppercase text-xs tracking-widest shadow-lg shadow-brand-purple/20 hover:opacity-90 active:scale-[0.98] transition-all flex items-center justify-center gap-2"
+              >
+                <Send size={16} /> Enviar Informe
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }

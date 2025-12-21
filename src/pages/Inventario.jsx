@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Plus, Search, AlertTriangle, Edit3, Trash2, X, Wrench, CheckSquare, Square, Home, Truck, Zap } from "lucide-react";
-import { useInventory } from "../hooks/useInventory"; // 👈 Nuevo Hook
-import { useEquipos } from "../hooks/useEquipos";     // 👈 Reutilizamos el de Equipos
+import { toast } from "sonner"; // 👈 Importamos toast
+import { useInventory } from "../hooks/useInventory";
+import { useEquipos } from "../hooks/useEquipos";
 
 const WAREHOUSES = [
   { id: "Bodega Local", label: "Bodega Local", icon: <Home size={14} />, color: "bg-slate-800 text-slate-300" },
@@ -10,9 +11,8 @@ const WAREHOUSES = [
 ];
 
 export default function Inventario() {
-  // 1. GESTIÓN DE ESTADO CON HOOKS (Adiós LocalStorage manual)
   const { inventory: items, loading, addItem, updateItem, deleteItem } = useInventory();
-  const { equipments: availableEquipments } = useEquipos(); // Cargamos equipos reales
+  const { equipments: availableEquipments } = useEquipos();
 
   const [searchTerm, setSearchTerm] = useState("");
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -37,8 +37,6 @@ export default function Inventario() {
     compatible_models: []
   });
 
-  // --- ACTIONS ---
-
   const handleEdit = (item) => {
     setEditingId(item.id);
     setFormData({
@@ -61,28 +59,44 @@ export default function Inventario() {
 
   const handleDelete = async () => {
     if (!itemToDelete) return;
+    
+    const promise = deleteItem(itemToDelete.id);
+    
+    toast.promise(promise, {
+        loading: 'Eliminando ítem...',
+        success: 'Ítem eliminado correctamente',
+        error: (err) => `Error: ${err.message}`
+    });
+
     try {
-      await deleteItem(itemToDelete.id);
-      setIsDeleteModalOpen(false);
-      setItemToDelete(null);
+        await promise;
+        setIsDeleteModalOpen(false);
+        setItemToDelete(null);
     } catch (error) {
-      alert("Error al eliminar: " + error.message);
+        console.error(error);
     }
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    
+    const promise = editingId 
+        ? updateItem(editingId, formData)
+        : addItem(formData);
+
+    toast.promise(promise, {
+        loading: editingId ? 'Actualizando...' : 'Creando ítem...',
+        success: editingId ? 'Ítem actualizado correctamente' : 'Ítem creado exitosamente',
+        error: (err) => `Error: ${err.message}`
+    });
+
     try {
-      if (editingId) {
-        await updateItem(editingId, formData);
-      } else {
-        await addItem(formData);
-      }
-      setIsModalOpen(false);
-      setEditingId(null);
-      resetForm();
+        await promise;
+        setIsModalOpen(false);
+        setEditingId(null);
+        resetForm();
     } catch (error) {
-      alert("Error al guardar: " + error.message);
+        console.error(error);
     }
   };
 
@@ -126,7 +140,6 @@ export default function Inventario() {
 
   return (
     <div className="space-y-6">
-      {/* HEADER */}
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-3xl font-black text-white tracking-tight uppercase italic">Control de Inventario</h1>
@@ -140,7 +153,6 @@ export default function Inventario() {
         </button>
       </div>
 
-      {/* SEARCH */}
       <div className="bg-slate-900/50 p-4 rounded-2x border border-white/5 flex flex-col md:flex-row gap-4 items-center justify-between">
         <div className="relative w-full md:w-96">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
@@ -155,7 +167,6 @@ export default function Inventario() {
         {loading && <span className="text-xs text-brand-purple animate-pulse font-bold uppercase">Sincronizando...</span>}
       </div>
 
-      {/* TABLE */}
       <div className="bg-slate-900/50 rounded-2xl border border-white/5 overflow-hidden backdrop-blur-sm shadow-xl">
         <table className="w-full text-left">
           <thead className="bg-white/5 text-slate-400 text-[10px] uppercase font-black tracking-[0.2em]">
@@ -241,11 +252,9 @@ export default function Inventario() {
         )}
       </div>
 
-      {/* --- MODAL --- */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-md flex items-center justify-center z-[100] p-4">
           <div className="bg-slate-900 border border-white/10 w-full max-w-3xl rounded-[2.5rem] shadow-2xl overflow-hidden border-t-brand-purple border-t-4 flex flex-col max-h-[90vh] animate-in fade-in zoom-in duration-300">
-
             <div className="flex justify-between items-center p-8 pb-4">
               <div className="flex items-center gap-4">
                 <div className="w-12 h-12 rounded-2xl bg-brand-gradient flex items-center justify-center text-white shadow-lg">
@@ -266,7 +275,6 @@ export default function Inventario() {
             <div className="p-8 pt-4 overflow-y-auto custom-scrollbar">
               <form onSubmit={handleSubmit} className="space-y-6">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                  {/* LEFT: BASIC INFO */}
                   <div className="space-y-6">
                     <div className="space-y-2">
                       <label className="text-[10px] uppercase font-black text-slate-500 tracking-widest ml-1">Clasificación</label>
@@ -342,7 +350,6 @@ export default function Inventario() {
                     </div>
                   </div>
 
-                  {/* RIGHT: STOCK DISTRIBUTION & COMPATIBILITY */}
                   <div className="space-y-6">
                     {formData.type !== 'Servicio' && (
                       <div className="space-y-4">
@@ -419,7 +426,6 @@ export default function Inventario() {
         </div>
       )}
 
-      {/* --- DELETE MODAL --- */}
       {isDeleteModalOpen && (
         <div className="fixed inset-0 bg-slate-950/95 backdrop-blur-md flex items-center justify-center z-[110] p-4">
           <div className="bg-slate-900 border border-red-500/30 w-full max-w-sm rounded-[2.5rem] shadow-2xl p-8 text-center animate-in fade-in zoom-in duration-300">
