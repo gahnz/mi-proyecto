@@ -3,10 +3,11 @@ import {
     DollarSign, Plus, Search, ArrowUpCircle, ArrowDownCircle,
     FileText, Calendar, TrendingUp, Download, Trash2,
     Info, Calculator, Landmark, Pencil, CreditCard, Banknote, Percent,
-    ShoppingBag, X
+    ShoppingBag, X, AlertTriangle
 } from "lucide-react";
-import { useCashFlow } from "../hooks/useCashFlow"; // 👈 Hook de Caja
-import { useInventory } from "../hooks/useInventory"; // 👈 Hook de Inventario (para ventas ecom)
+import { toast } from "sonner"; // 👈 Toast
+import { useCashFlow } from "../hooks/useCashFlow";
+import { useInventory } from "../hooks/useInventory";
 
 const DOCUMENT_TYPES = [
     { id: "33", label: "Factura Electrónica" },
@@ -34,22 +35,24 @@ const TAX_CATEGORIES = [
 ];
 
 const FlujoCaja = () => {
-    // 1. Usamos los Hooks
     const { movements, loading, addMovement, updateMovement, deleteMovement } = useCashFlow();
-    const { inventory, updateItem } = useInventory(); // Para descontar stock en ventas ecom manuales
+    const { inventory, updateItem } = useInventory();
 
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [isEcommerceModalOpen, setIsEcommerceModalOpen] = useState(false);
     const [filterType, setFilterType] = useState("Todos");
     const [searchTerm, setSearchTerm] = useState("");
     const [editingId, setEditingId] = useState(null);
-    const [filterMonth, setFilterMonth] = useState(new Date().toISOString().slice(0, 7)); // YYYY-MM
+    const [filterMonth, setFilterMonth] = useState(new Date().toISOString().slice(0, 7));
     
-    // UI Helpers for Inventory Search in Modal
+    // UI Helpers
     const [itemSearchTerm, setItemSearchTerm] = useState("");
     const [showItemResults, setShowItemResults] = useState(false);
 
-    // Form State
+    // Delete Modal State
+    const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+    const [itemToDelete, setItemToDelete] = useState(null);
+
     const [formData, setFormData] = useState({
         date: new Date().toISOString().split('T')[0],
         type: "income",
@@ -72,21 +75,20 @@ const FlujoCaja = () => {
 
     const handleSave = async () => {
         if (!formData.totalAmount || !formData.description) {
-            alert("Por favor ingrese el monto y una descripción.");
+            toast.error("Faltan datos", { description: "Debe ingresar monto y descripción." });
             return;
         }
 
-        try {
+        const promise = (async () => {
             if (editingId) {
                 await updateMovement(editingId, formData);
             } else {
                 await addMovement(formData);
             }
 
-            // --- LÓGICA DE DESCUENTO DE STOCK (E-COMMERCE MANUAL) ---
-            // Si es una venta E-commerce nueva con un item seleccionado
+            // Logic for E-commerce stock deduction
             if (formData.isEcommerce && formData.itemId && formData.warehouse && !editingId) {
-                const item = inventory.find(i => i.id === formData.itemId); // Item desde hook (tiene camelCase)
+                const item = inventory.find(i => i.id === formData.itemId);
                 if (item) {
                     const currentStock = item.stocksByWarehouse?.[formData.warehouse] || 0;
                     if (currentStock >= formData.quantity) {
@@ -94,22 +96,48 @@ const FlujoCaja = () => {
                             ...item.stocksByWarehouse,
                             [formData.warehouse]: currentStock - formData.quantity
                         };
-                        // Actualizar en Supabase via hook
                         await updateItem(item.id, { ...item, stocksByWarehouse: updatedStocks });
                     } else {
-                        alert(`⚠️ Nota: Stock insuficiente en ${formData.warehouse}. Se registró la venta pero no se descontó stock.`);
+                        throw new Error(`Stock insuficiente en ${formData.warehouse}. Venta registrada sin descuento de stock.`);
                     }
                 }
             }
+        })();
 
-            setIsModalOpen(false);
-            setIsEcommerceModalOpen(false);
-            resetForm();
-        } catch (error) {
-            alert("Error al guardar: " + error.message);
-        }
+        toast.promise(promise, {
+            loading: 'Guardando movimiento...',
+            success: () => {
+                setIsModalOpen(false);
+                setIsEcommerceModalOpen(false);
+                resetForm();
+                return 'Movimiento registrado correctamente';
+            },
+            error: (err) => `Atención: ${err.message}`
+        });
     };
 
+    const confirmDelete = (mov) => {
+        setItemToDelete(mov);
+        setIsDeleteModalOpen(true);
+    };
+
+    const handleDelete = async () => {
+        if (!itemToDelete) return;
+
+        const promise = deleteMovement(itemToDelete.id);
+
+        toast.promise(promise, {
+            loading: 'Eliminando registro...',
+            success: () => {
+                setIsDeleteModalOpen(false);
+                setItemToDelete(null);
+                return 'Registro eliminado';
+            },
+            error: (err) => `Error: ${err.message}`
+        });
+    };
+
+    // ... (El resto de funciones auxiliares resetForm, updateAmounts, cálculos se mantienen igual)
     const handleEdit = (mov) => {
         setEditingId(mov.id);
         setFormData(mov);
@@ -117,16 +145,6 @@ const FlujoCaja = () => {
             setIsEcommerceModalOpen(true);
         } else {
             setIsModalOpen(true);
-        }
-    };
-
-    const handleDelete = async (id) => {
-        if (confirm("¿Está seguro de eliminar este registro?")) {
-            try {
-                await deleteMovement(id);
-            } catch (error) {
-                alert("Error al eliminar: " + error.message);
-            }
         }
     };
 
@@ -200,7 +218,6 @@ const FlujoCaja = () => {
     };
 
     const monthMovements = movements.filter(m => !filterMonth || m.date.startsWith(filterMonth));
-
     const totalIncome = monthMovements.filter(m => m.type === "income").reduce((acc, curr) => acc + Number(curr.totalAmount), 0);
     const totalExpense = monthMovements.filter(m => m.type === "expense").reduce((acc, curr) => acc + Number(curr.totalAmount), 0);
     const ivaDebito = monthMovements.filter(m => m.type === "income").reduce((acc, curr) => acc + Number(curr.taxAmount || 0), 0);
@@ -228,7 +245,7 @@ const FlujoCaja = () => {
 
     return (
         <div className="space-y-6 animate-fadeIn pb-20">
-            {/* Header */}
+            {/* ... HEADER, STATS, FILTERS (Igual que antes) ... */}
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                 <div>
                     <h1 className="text-3xl font-black bg-clip-text text-transparent bg-brand-gradient italic uppercase tracking-tighter">
@@ -261,7 +278,6 @@ const FlujoCaja = () => {
                 </div>
             </div>
 
-            {/* Stats Grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                 <StatCard title="Ingresos Totales" value={`$${totalIncome.toLocaleString()}`} icon={<ArrowUpCircle size={24} className="text-emerald-400" />} />
                 <StatCard title="Egresos Totales" value={`$${totalExpense.toLocaleString()}`} icon={<ArrowDownCircle size={24} className="text-rose-400" />} />
@@ -269,7 +285,6 @@ const FlujoCaja = () => {
                 <StatCard title="Balance Operativo" value={`$${balance.toLocaleString()}`} icon={<DollarSign size={24} className="text-brand-purple" />} />
             </div>
 
-            {/* Balances */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 {[
                     { label: 'Efectivo', val: cashBalance, icon: <Banknote size={24} />, col: 'text-emerald-400', bg: 'bg-emerald-500/10' },
@@ -286,7 +301,6 @@ const FlujoCaja = () => {
                 ))}
             </div>
 
-            {/* Filters */}
             <div className="bg-slate-900/50 backdrop-blur-xl p-4 rounded-2xl border border-white/5 flex flex-col md:flex-row gap-4 justify-between">
                 <div className="flex gap-2 items-center">
                     {["Todos", "Ingresos", "Egresos"].map((type) => (
@@ -304,7 +318,6 @@ const FlujoCaja = () => {
                 </div>
             </div>
 
-            {/* Table */}
             <div className="bg-slate-900/50 rounded-2xl border border-white/5 overflow-hidden shadow-2xl">
                 <table className="w-full text-left">
                     <thead className="bg-slate-950/50 text-[10px] uppercase font-black tracking-[0.2em] text-slate-500 border-b border-white/5">
@@ -348,7 +361,7 @@ const FlujoCaja = () => {
                                 <td className="px-6 py-4 text-right">
                                     <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-all justify-end">
                                         <button onClick={() => handleEdit(mov)} className="p-1.5 rounded-lg hover:bg-brand-cyan/10 text-slate-600 hover:text-brand-cyan"><Pencil size={14} /></button>
-                                        <button onClick={() => handleDelete(mov.id)} className="p-1.5 rounded-lg hover:bg-rose-500/10 text-slate-600 hover:text-rose-500"><Trash2 size={14} /></button>
+                                        <button onClick={() => confirmDelete(mov)} className="p-1.5 rounded-lg hover:bg-rose-500/10 text-slate-600 hover:text-rose-500"><Trash2 size={14} /></button>
                                     </div>
                                 </td>
                             </tr>
@@ -358,8 +371,7 @@ const FlujoCaja = () => {
                 {filteredMovements.length === 0 && <div className="py-20 text-center text-slate-500 font-medium">Sin movimientos en este periodo.</div>}
             </div>
 
-            {/* --- MODALS (Standard & Ecommerce) --- */}
-            {/* Standard Modal */}
+            {/* ... MODALES CON TOAST YA INTEGRADOS EN handleSave ... */}
             {isModalOpen && (
                 <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-[100] flex items-center justify-center p-4">
                     <div className="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
@@ -393,7 +405,6 @@ const FlujoCaja = () => {
                 </div>
             )}
 
-            {/* Ecommerce Modal (Simplified for brevity but functional logic included) */}
             {isEcommerceModalOpen && (
                 <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-[100] flex items-center justify-center p-4">
                     <div className="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col max-h-[90vh] border-t-brand-cyan border-t-4">
@@ -429,11 +440,39 @@ const FlujoCaja = () => {
                     </div>
                 </div>
             )}
+
+            {isDeleteModalOpen && (
+                <div className="fixed inset-0 bg-slate-950/95 backdrop-blur-md flex items-center justify-center z-[110] p-4">
+                    <div className="bg-slate-900 border border-red-500/30 w-full max-w-sm rounded-[2.5rem] shadow-2xl p-8 text-center animate-in fade-in zoom-in duration-300">
+                        <div className="w-16 h-16 bg-red-500/10 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4 border border-red-500/20">
+                            <AlertTriangle size={32} />
+                        </div>
+                        <h2 className="text-xl font-black text-white mb-2 uppercase italic">¿Eliminar Registro?</h2>
+                        <p className="text-slate-400 mb-8 text-xs font-medium px-4">
+                            Esta acción borrará el movimiento contable permanentemente.
+                        </p>
+                        <div className="flex gap-4">
+                            <button
+                                onClick={() => setIsDeleteModalOpen(false)}
+                                className="flex-1 bg-slate-800 text-white font-black py-4 rounded-2xl hover:bg-slate-700 transition-all uppercase text-[10px] tracking-widest"
+                            >
+                                Cancelar
+                            </button>
+                            <button
+                                onClick={handleDelete}
+                                className="flex-1 bg-red-600 text-white font-black py-4 rounded-2xl hover:bg-red-700 transition-all shadow-lg shadow-red-600/30 uppercase text-[10px] tracking-widest italic"
+                            >
+                                Sí, Eliminar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };
 
-// Simple Stat Card Component
+// Stateless Components
 const StatCard = ({ title, value, icon, isSpecial }) => (
     <div className={`p-5 rounded-2xl border flex items-center gap-4 ${isSpecial ? 'bg-brand-purple/10 border-brand-purple/50' : 'bg-slate-900/50 border-white/5'}`}>
         <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${isSpecial ? 'bg-brand-purple text-white' : 'bg-slate-800 text-slate-400'}`}>{icon}</div>

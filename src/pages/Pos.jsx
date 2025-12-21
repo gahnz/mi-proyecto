@@ -3,12 +3,12 @@ import {
   Search, ShoppingCart, Trash2, CreditCard, Banknote,
   Landmark, CheckCircle2, Package, UserPlus, Minus, Plus, Wrench, Tag
 } from "lucide-react";
+import { toast } from "sonner"; // 👈 Importamos toast
 import { useInventory } from "../hooks/useInventory";
 import { useCustomers } from "../hooks/useCustomers";
 import { supabase } from "../supabase/client";
 
 export default function Pos() {
-  // --- LÓGICA DE DATOS (NO TOCAMOS NADA AQUÍ) ---
   const { inventory, updateItem, refresh: refreshInventory } = useInventory();
   const { customers } = useCustomers();
 
@@ -28,13 +28,13 @@ export default function Pos() {
   const addToCart = (product) => {
     const localStock = product.stocksByWarehouse?.["Bodega Local"] || 0;
     if (product.type !== 'Servicio' && localStock <= 0) {
-      alert("¡Sin stock en Bodega Local!");
+      toast.error("Sin stock", { description: "No hay unidades en Bodega Local." });
       return;
     }
     const exists = cart.find(item => item.id === product.id);
     if (exists) {
       if (product.type !== 'Servicio' && localStock <= exists.qty) {
-        alert("No hay más stock disponible en local");
+        toast.warning("Stock máximo alcanzado", { description: "No puedes agregar más unidades de las disponibles." });
         return;
       }
       setCart(cart.map(item => item.id === product.id ? { ...item, qty: item.qty + 1 } : item));
@@ -53,7 +53,7 @@ export default function Pos() {
         const newQty = item.qty + delta;
         const localStock = item.stocksByWarehouse?.["Bodega Local"] || 0;
         if (item.type !== 'Servicio' && delta > 0 && localStock <= item.qty) {
-          alert("Tope de stock alcanzado");
+          toast.warning("Tope de stock", { description: "No hay más unidades disponibles." });
           return item;
         }
         return newQty > 0 ? { ...item, qty: newQty } : item;
@@ -70,60 +70,68 @@ export default function Pos() {
     if (cart.length === 0) return;
     setLoadingProcessing(true);
 
-    try {
-      const saleId = `V-${Math.floor(Date.now() / 1000).toString().slice(-4)}`;
-      const docNo = Math.floor(1000 + Math.random() * 9000).toString();
+    const promise = (async () => {
+        const saleId = `V-${Math.floor(Date.now() / 1000).toString().slice(-4)}`;
+        const docNo = Math.floor(1000 + Math.random() * 9000).toString();
 
-      const { error: saleError } = await supabase.from('sales').insert([{
-        sale_id: saleId,
-        customer_id: selectedCustomer.id === 'mostrador' ? null : selectedCustomer.id,
-        customer_name: selectedCustomer.type === 'Empresa' ? selectedCustomer.business_name : selectedCustomer.full_name,
-        total_amount: total,
-        payment_method: paymentMethod,
-        items: cart.map(i => ({ id: i.id, name: i.name, qty: i.qty, price: i.price_sell }))
-      }]);
-      if (saleError) throw saleError;
+        const { error: saleError } = await supabase.from('sales').insert([{
+            sale_id: saleId,
+            customer_id: selectedCustomer.id === 'mostrador' ? null : selectedCustomer.id,
+            customer_name: selectedCustomer.type === 'Empresa' ? selectedCustomer.business_name : selectedCustomer.full_name,
+            total_amount: total,
+            payment_method: paymentMethod,
+            items: cart.map(i => ({ id: i.id, name: i.name, qty: i.qty, price: i.price_sell }))
+        }]);
+        if (saleError) throw saleError;
 
-      const { error: cashError } = await supabase.from('cash_flow').insert([{
-        date: new Date().toISOString().split('T')[0],
-        type: "income",
-        doc_type: "VOU",
-        doc_number: docNo,
-        description: `Venta POS ${saleId} | ${cart.length} ítems`,
-        category: "VENTA",
-        payment_method: paymentMethod,
-        net_amount: neto,
-        tax_amount: iva,
-        total_amount: total,
-        is_ecommerce: false
-      }]);
-      if (cashError) throw cashError;
+        const { error: cashError } = await supabase.from('cash_flow').insert([{
+            date: new Date().toISOString().split('T')[0],
+            type: "income",
+            doc_type: "VOU",
+            doc_number: docNo,
+            description: `Venta POS ${saleId} | ${cart.length} ítems`,
+            category: "VENTA",
+            payment_method: paymentMethod,
+            net_amount: neto,
+            tax_amount: iva,
+            total_amount: total,
+            is_ecommerce: false
+        }]);
+        if (cashError) throw cashError;
 
-      for (const item of cart) {
-        if (item.type !== 'Servicio') {
-          const currentStock = item.stocksByWarehouse["Bodega Local"] || 0;
-          const newStock = Math.max(0, currentStock - item.qty);
-          const updatedStocks = { ...item.stocksByWarehouse, "Bodega Local": newStock };
-          await updateItem(item.id, { ...item, stocksByWarehouse: updatedStocks });
+        for (const item of cart) {
+            if (item.type !== 'Servicio') {
+                const currentStock = item.stocksByWarehouse["Bodega Local"] || 0;
+                const newStock = Math.max(0, currentStock - item.qty);
+                const updatedStocks = { ...item.stocksByWarehouse, "Bodega Local": newStock };
+                await updateItem(item.id, { ...item, stocksByWarehouse: updatedStocks });
+            }
         }
-      }
+    })();
 
-      setSaleSuccess(true);
-      setCart([]);
-      setSelectedCustomer(clientMostrador);
-      await refreshInventory();
-      setTimeout(() => setSaleSuccess(false), 3000);
+    toast.promise(promise, {
+        loading: 'Procesando venta...',
+        success: () => {
+            setSaleSuccess(true);
+            setCart([]);
+            setSelectedCustomer(clientMostrador);
+            refreshInventory();
+            setTimeout(() => setSaleSuccess(false), 3000);
+            return '¡Venta realizada con éxito!';
+        },
+        error: (err) => `Error al procesar: ${err.message}`
+    });
 
+    try {
+        await promise;
     } catch (error) {
-      console.error("Error en venta:", error);
-      alert("Error al procesar venta: " + error.message);
+        console.error(error);
     } finally {
-      setLoadingProcessing(false);
+        setLoadingProcessing(false);
     }
   };
 
   return (
-    // 👇 AQUÍ AJUSTAMOS LA ALTURA: h-[calc(100vh-85px)]
     <div className="flex gap-6 h-[calc(100vh-85px)] animate-in fade-in duration-500 overflow-hidden">
 
       {/* --- PANEL DE PRODUCTOS (IZQUIERDA) --- */}

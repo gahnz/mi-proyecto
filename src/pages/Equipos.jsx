@@ -5,24 +5,28 @@ import {
     Pencil,
     Trash2,
     Laptop2,
-    Cpu
+    Cpu,
+    AlertTriangle
 } from "lucide-react";
+import { toast } from "sonner"; // 👈 Importamos toast
 import { EQUIP_TYPES } from "../data/mockData";
 import { useEquipos } from "../hooks/useEquipos";
-import { useInventory } from "../hooks/useInventory"; // 👈 IMPORTAMOS EL HOOK DE INVENTARIO
+import { useInventory } from "../hooks/useInventory";
 
 const Equipos = () => {
-    // 1. Usamos ambos Hooks para traer datos REALES de la base de datos
     const { equipments, loading: loadingEquipos, addEquipo, updateEquipo, deleteEquipo } = useEquipos();
-    const { inventory, loading: loadingInventory } = useInventory(); // 👈 Traemos el inventario real
+    const { inventory, loading: loadingInventory } = useInventory();
     
-    // Estado local para UI y búsqueda
     const [searchTerm, setSearchTerm] = useState("");
     const [isModalOpen, setIsModalOpen] = useState(false);
+    
+    // Estado para el modal de eliminación
+    const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+    const [itemToDelete, setItemToDelete] = useState(null);
+
     const [editingId, setEditingId] = useState(null);
     const [newEquip, setNewEquip] = useState({ type: "Notebook", brand: "", model: "" });
 
-    // Lógica de filtrado
     const filteredEquipments = equipments.filter(item =>
         item.model.toLowerCase().includes(searchTerm.toLowerCase()) ||
         item.brand.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -41,31 +45,46 @@ const Equipos = () => {
     };
 
     const handleSaveEquipment = async () => {
-        if (!newEquip.brand || !newEquip.model) return;
-
-        try {
-            if (editingId) {
-                await updateEquipo(editingId, newEquip);
-            } else {
-                await addEquipo(newEquip);
-            }
-            
-            setEditingId(null);
-            setNewEquip({ type: "Notebook", brand: "", model: "" });
-            setIsModalOpen(false);
-        } catch (error) {
-            alert("Error al guardar: " + error.message);
+        if (!newEquip.brand || !newEquip.model) {
+            toast.error("Faltan datos", { description: "Marca y Modelo son obligatorios" });
+            return;
         }
+
+        const promise = editingId 
+            ? updateEquipo(editingId, newEquip)
+            : addEquipo(newEquip);
+
+        toast.promise(promise, {
+            loading: editingId ? 'Actualizando modelo...' : 'Registrando modelo...',
+            success: () => {
+                setEditingId(null);
+                setNewEquip({ type: "Notebook", brand: "", model: "" });
+                setIsModalOpen(false);
+                return editingId ? 'Modelo actualizado' : 'Modelo registrado';
+            },
+            error: (err) => `Error: ${err.message}`
+        });
     };
 
-    const handleDeleteEquipment = async (id) => {
-        if (window.confirm("¿Seguro que quieres eliminar este modelo?")) {
-            try {
-                await deleteEquipo(id);
-            } catch (error) {
-                alert("Error al eliminar: " + error.message);
-            }
-        }
+    const confirmDelete = (item) => {
+        setItemToDelete(item);
+        setIsDeleteModalOpen(true);
+    };
+
+    const handleDelete = async () => {
+        if (!itemToDelete) return;
+
+        const promise = deleteEquipo(itemToDelete.id);
+
+        toast.promise(promise, {
+            loading: 'Eliminando modelo...',
+            success: () => {
+                setIsDeleteModalOpen(false);
+                setItemToDelete(null);
+                return 'Modelo eliminado correctamente';
+            },
+            error: (err) => `Error: ${err.message}`
+        });
     };
 
     const getTypeIcon = (typeName) => {
@@ -117,7 +136,6 @@ const Equipos = () => {
             {/* Grid of Equipment Models */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                 {filteredEquipments.map((item) => {
-                    // Lógica actualizada: Ahora busca en el inventario REAL de Supabase
                     const linkedItems = inventory.filter(invItem =>
                         invItem.compatible_models?.includes(`${item.brand} ${item.model}`)
                     );
@@ -127,7 +145,6 @@ const Equipos = () => {
                             key={item.id}
                             className="group bg-slate-900/50 backdrop-blur-md rounded-2xl border border-white/5 p-5 hover:border-brand-cyan/30 transition-all hover:shadow-lg hover:shadow-brand-cyan/5 relative overflow-hidden flex flex-col h-full"
                         >
-                            {/* ACTION BUTTONS (Edit & Delete) */}
                             <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                                 <button
                                     onClick={() => handleOpenModal(item)}
@@ -137,7 +154,7 @@ const Equipos = () => {
                                     <Pencil size={18} />
                                 </button>
                                 <button
-                                    onClick={() => handleDeleteEquipment(item.id)}
+                                    onClick={() => confirmDelete(item)}
                                     className="p-2 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
                                     title="Eliminar"
                                 >
@@ -160,7 +177,6 @@ const Equipos = () => {
                                 <p className="text-white font-medium truncate" title={item.model}>{item.model}</p>
                             </div>
 
-                            {/* Linked Items Section (Ahora con datos Reales) */}
                             <div className="mt-auto pt-4 border-t border-white/5">
                                 <p className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-2">
                                     <span className="w-1.5 h-1.5 rounded-full bg-brand-purple"></span>
@@ -191,14 +207,7 @@ const Equipos = () => {
                 })}
             </div>
 
-            {filteredEquipments.length === 0 && (
-                <div className="text-center py-20 text-slate-500">
-                    <Laptop2 size={48} className="mx-auto mb-4 opacity-20" />
-                    <p>No hay equipos registrados en la nube. ¡Agrega el primero!</p>
-                </div>
-            )}
-
-            {/* Modal code remains the same */}
+            {/* Modal Crear/Editar */}
             {isModalOpen && (
                 <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
                     <div className="bg-slate-900 border border-white/10 rounded-2xl w-full max-w-md shadow-2xl animate-in fade-in zoom-in duration-200">
@@ -261,6 +270,35 @@ const Equipos = () => {
                                     {editingId ? "Guardar Cambios" : "Guardar Modelo"}
                                 </button>
                             </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Modal Eliminar */}
+            {isDeleteModalOpen && (
+                <div className="fixed inset-0 bg-slate-950/95 backdrop-blur-md flex items-center justify-center z-[110] p-4">
+                    <div className="bg-slate-900 border border-red-500/30 w-full max-w-sm rounded-[2.5rem] shadow-2xl p-8 text-center animate-in fade-in zoom-in duration-300">
+                        <div className="w-16 h-16 bg-red-500/10 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4 border border-red-500/20">
+                            <AlertTriangle size={32} />
+                        </div>
+                        <h2 className="text-xl font-black text-white mb-2 uppercase italic">¿Eliminar Equipo?</h2>
+                        <p className="text-slate-400 mb-8 text-xs font-medium px-4">
+                            Borrarás <span className="text-white font-bold italic">"{itemToDelete?.brand} {itemToDelete?.model}"</span>. Esta acción no se puede deshacer.
+                        </p>
+                        <div className="flex gap-4">
+                            <button
+                                onClick={() => setIsDeleteModalOpen(false)}
+                                className="flex-1 bg-slate-800 text-white font-black py-4 rounded-2xl hover:bg-slate-700 transition-all uppercase text-[10px] tracking-widest"
+                            >
+                                Cancelar
+                            </button>
+                            <button
+                                onClick={handleDelete}
+                                className="flex-1 bg-red-600 text-white font-black py-4 rounded-2xl hover:bg-red-700 transition-all shadow-lg shadow-red-600/30 uppercase text-[10px] tracking-widest italic"
+                            >
+                                Sí, Eliminar
+                            </button>
                         </div>
                     </div>
                 </div>

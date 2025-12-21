@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Plus, Search, Edit3, Trash2, X, Phone, Mail, MapPin, Building2, Info, AlertTriangle } from "lucide-react";
-import { storage } from "../services/storage";
+import { toast } from "sonner"; // 👈 Importamos toast
 import { supabase } from "../supabase/client";
 
 // DATA COMPLETA DE COMUNAS RM Y REGIONES
@@ -37,7 +37,7 @@ export default function Clientes() {
       .order('created_at', { ascending: false });
 
     if (error) {
-      console.error("Error fetching customers:", error);
+      toast.error("Error al cargar clientes", { description: error.message });
     } else {
       setCustomers(data || []);
     }
@@ -46,13 +46,11 @@ export default function Clientes() {
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    // Validación de seguridad para selectores (Obligatorios)
     if (!formData.region || !formData.comuna) {
-      alert("La Región y Comuna son obligatorias.");
+      toast.error("Datos incompletos", { description: "La Región y Comuna son obligatorias." });
       return;
     }
 
-    // Preparar datos: convertir strings vacíos de campos opcionales en NULL para evitar errores de duplicado
     const submissionData = {
       ...formData,
       rut_dni: formData.rut_dni?.trim() === "" ? null : formData.rut_dni,
@@ -61,48 +59,39 @@ export default function Clientes() {
       observations: formData.observations?.trim() === "" ? null : formData.observations
     };
 
-    if (editingId) {
-      const { error } = await supabase
-        .from("customers")
-        .update(submissionData)
-        .eq("id", editingId);
+    const promise = editingId 
+        ? supabase.from("customers").update(submissionData).eq("id", editingId)
+        : supabase.from("customers").insert([submissionData]);
 
-      if (error) {
-        if (error.code === "23505") alert("Ese RUT ya está registrado con otro cliente.");
-        else alert("Error al actualizar cliente: " + error.message);
-        return;
-      }
-    } else {
-      const { error } = await supabase
-        .from("customers")
-        .insert([submissionData]);
-
-      if (error) {
-        if (error.code === "23505") alert("Ese RUT ya está registrado con otro cliente.");
-        else alert("Error al crear cliente: " + error.message);
-        return;
-      }
-    }
-
-    closeModal();
-    fetchCustomers();
+    toast.promise(promise, {
+        loading: editingId ? 'Actualizando cliente...' : 'Registrando cliente...',
+        success: () => {
+            fetchCustomers();
+            closeModal();
+            return editingId ? 'Cliente actualizado correctamente' : 'Cliente registrado exitosamente';
+        },
+        error: (err) => {
+            if (err.code === "23505") return "Ese RUT ya está registrado con otro cliente.";
+            return `Error: ${err.message}`;
+        }
+    });
   };
 
   const handleDelete = async () => {
-    if (itemToDelete) {
-      const { error } = await supabase
-        .from("customers")
-        .delete()
-        .eq("id", itemToDelete.id);
+    if (!itemToDelete) return;
 
-      if (error) {
-        alert("Error al eliminar cliente: " + error.message);
-      } else {
-        setIsDeleteModalOpen(false);
-        setItemToDelete(null);
-        fetchCustomers();
-      }
-    }
+    const promise = supabase.from("customers").delete().eq("id", itemToDelete.id);
+
+    toast.promise(promise, {
+        loading: 'Eliminando cliente...',
+        success: () => {
+            fetchCustomers();
+            setIsDeleteModalOpen(false);
+            setItemToDelete(null);
+            return 'Cliente eliminado correctamente';
+        },
+        error: (err) => `Error al eliminar: ${err.message}`
+    });
   };
 
   const closeModal = () => {
@@ -123,7 +112,6 @@ export default function Clientes() {
 
   return (
     <div className="space-y-6">
-      {/* HEADER */}
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-3xl font-black text-white italic tracking-tight uppercase">Base de Clientes</h1>
@@ -137,7 +125,6 @@ export default function Clientes() {
         </button>
       </div>
 
-      {/* BUSCADOR */}
       <div className="bg-slate-900/50 p-4 rounded-2xl border border-white/5">
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
@@ -151,7 +138,6 @@ export default function Clientes() {
         </div>
       </div>
 
-      {/* LISTADO DE TARJETAS */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {filtered.map((c) => (
           <div key={c.id} className="bg-slate-900/50 border border-white/5 p-5 rounded-2xl hover:border-brand-purple/50 transition-all group relative overflow-hidden shadow-xl">
@@ -179,7 +165,6 @@ export default function Clientes() {
         ))}
       </div>
 
-      {/* MODAL PRINCIPAL */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center z-[100] p-4">
           <div className="bg-slate-900 border border-white/10 w-full max-w-2xl rounded-3xl shadow-2xl overflow-hidden border-t-brand-cyan border-t-4 max-h-[90vh] flex flex-col">
@@ -238,7 +223,6 @@ export default function Clientes() {
                   <input type="email" className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-white focus:border-brand-cyan outline-none" placeholder="cliente@correo.com" value={formData.email} onChange={(e) => setFormData({ ...formData, email: e.target.value })} />
                 </div>
 
-                {/* UBICACIÓN OBLIGATORIA */}
                 <div>
                   <label className="text-[10px] uppercase font-bold text-slate-500 ml-1 mb-1 block tracking-widest">Región *</label>
                   <select required className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-white outline-none focus:border-brand-cyan cursor-pointer appearance-none" value={formData.region} onChange={(e) => setFormData({ ...formData, region: e.target.value, comuna: "" })}>
@@ -273,7 +257,6 @@ export default function Clientes() {
         </div>
       )}
 
-      {/* MODAL ELIMINAR */}
       {isDeleteModalOpen && (
         <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-sm flex items-center justify-center z-[110] p-4">
           <div className="bg-slate-900 border border-red-500/30 w-full max-w-sm rounded-3xl p-8 text-center shadow-2xl">
