@@ -6,14 +6,16 @@ import {
     Save, Monitor, Printer, Cpu, Image, Camera, UserCheck, Banknote, CreditCard, Landmark
 } from "lucide-react";
 import { supabase } from "../supabase/client";
+import { toast } from "sonner"; 
 
 // Importamos nuestros hooks
 import { useWorkOrders } from "../hooks/useWorkOrders";
 import { useCustomers } from "../hooks/useCustomers";
 import { useEquipos } from "../hooks/useEquipos";
 import { useInventory } from "../hooks/useInventory";
-// ... otros imports ...
-import { toast } from "sonner"; // 👈 IMPORTAR
+
+// Importamos el generador de PDF
+import { generateOrderPDF } from "../utils/pdfGenerator"; 
 
 const JOB_TYPES = ["Mantenimiento", "Reparación", "Revisión", "Configuración"];
 const STATUS_LIST = [
@@ -24,7 +26,8 @@ const STATUS_LIST = [
 
 const Taller = () => {
     // --- HOOKS DE DATOS ---
-    const { orders: repairs, loading, createOrder, updateOrder } = useWorkOrders();
+    // 👇 Extraemos deleteOrder del hook
+    const { orders: repairs, loading, createOrder, updateOrder, deleteOrder } = useWorkOrders();
     const { customers: clients } = useCustomers();
     const { equipments: equipmentsList } = useEquipos();
     const { inventory: inventoryItems } = useInventory();
@@ -38,8 +41,8 @@ const Taller = () => {
 
     // Modal & Scheduler
     const [isModalOpen, setIsModalOpen] = useState(false);
-    const [editingId, setEditingId] = useState(null); // ID visual (OT-XXX)
-    const [editingDbId, setEditingDbId] = useState(null); // ID real BD (int)
+    const [editingId, setEditingId] = useState(null);
+    const [editingDbId, setEditingDbId] = useState(null);
     const [equipSearch, setEquipSearch] = useState("");
     const [showEquipOptions, setShowEquipOptions] = useState(false);
     const [activeTab, setActiveTab] = useState("order");
@@ -79,24 +82,20 @@ const Taller = () => {
 
     // --- ACCIONES ---
 
-    // 👇 NUEVA FUNCIÓN: REGISTRAR EN CAJA AUTOMÁTICAMENTE
     const registerCashFlowEntry = async (orderId, customerName, total, method) => {
-        if (!orderId) return; // Si es nueva orden y no tenemos ID aún, saltamos (se asume flujo update)
+        if (!orderId) return;
 
-        // 1. Verificar si ya existe el ingreso para no duplicar
         const { data: existing } = await supabase
             .from('cash_flow')
             .select('id')
             .ilike('description', `%${orderId}%`)
             .limit(1);
 
-        if (existing && existing.length > 0) return; // Ya existe
+        if (existing && existing.length > 0) return;
 
-        // 2. Calcular Neto/IVA
         const neto = Math.round(total / 1.19);
         const tax = total - neto;
 
-        // 3. Insertar
         const { error } = await supabase.from('cash_flow').insert([{
             date: new Date().toISOString().split('T')[0],
             type: 'income',
@@ -106,13 +105,13 @@ const Taller = () => {
             total_amount: total,
             net_amount: neto,
             tax_amount: tax,
-            doc_type: 'VOU', // Por defecto Voucher/Interno
+            doc_type: 'VOU',
             doc_number: orderId.replace('OT-', ''),
             is_ecommerce: false
         }]);
 
         if (error) console.error("Error caja:", error);
-        else alert(`💰 Se ha registrado automáticamente el ingreso de $${total.toLocaleString()} en el Flujo de Caja.`);
+        else toast.success(`💰 Ingreso de $${total.toLocaleString('es-CL')} registrado en Caja.`);
     };
 
     const handleEditOrder = (repair) => {
@@ -120,19 +119,17 @@ const Taller = () => {
         setEditingDbId(repair.db_id);
         setActiveTab("order");
 
-        const clientFound = clients.find(c => c.full_name === repair.customer || c.business_name === repair.customer);
-
         setFormData({
             status: repair.status || "En cola",
             location: repair.location || "Local",
-            equipmentId: repair.equipment_id || "",
+            equipmentId: repair.equipment_id || "", 
             jobType: repair.job_type || "Reparación",
-            reportedFault: repair.reported_fault || repair.problem || "",
-            clientId: repair.customer_id || (clientFound ? clientFound.id : ""),
-            technician: repair.technician_name || repair.technician || "",
+            reportedFault: repair.reported_failure || "", 
+            clientId: repair.customer_id || "", 
+            technician: repair.technician_name || "",
+            internalNotes: repair.internal_notes || "",
             startDate: repair.start_date ? new Date(repair.start_date).toISOString().slice(0, 16) : "",
             estimatedEndDate: repair.estimated_end_date ? new Date(repair.estimated_end_date).toISOString().slice(0, 16) : "",
-            internalNotes: repair.internal_notes || "",
             selectedItems: repair.items || [],
             probReal: repair.prob_real || "",
             solReal: repair.sol_real || "",
@@ -144,79 +141,79 @@ const Taller = () => {
             paymentMethod: repair.payment_method || "Efectivo"
         });
 
-        setEquipSearch(repair.device || "");
+        setEquipSearch(repair.device || repair.device_name || "");
         setIsModalOpen(true);
     };
 
-    const handleSaveOrder = async () => {
-        // Validación
-        if (!formData.clientId || !formData.technician) {
-            toast.error("Faltan datos obligatorios", {
-                description: "Por favor selecciona un Cliente y un Técnico."
+    // 👇 NUEVA FUNCIÓN PARA ELIMINAR
+    const handleDeleteOrder = async (uuid, orderId) => {
+        if (window.confirm(`⚠️ ¿Estás seguro de ELIMINAR la orden ${orderId}?\nEsta acción no se puede deshacer.`)) {
+            const promise = deleteOrder(uuid);
+            toast.promise(promise, {
+                loading: 'Eliminando orden...',
+                success: 'Orden eliminada correctamente',
+                error: (err) => `Error al eliminar: ${err.message}`
             });
+        }
+    };
+
+    const handleSaveOrder = async () => {
+        if (!formData.clientId || !formData.technician) {
+            toast.error("Falta información", { description: "Cliente y Técnico son obligatorios." });
             return;
         }
 
-        // ... (cálculos de costos igual que antes) ...
         const totalCost = formData.selectedItems.reduce((acc, item) => acc + (Number(item.price) * (item.quantity || 1)), 0);
         const client = clients.find(c => c.id === formData.clientId);
         const equipment = equipmentsList.find(e => e.id === Number(formData.equipmentId));
         const customerName = client ? (client.business_name || client.full_name) : "Cliente Manual";
 
-        // ... (orderPayload igual que antes) ...
         const orderPayload = {
-            clientId: formData.clientId,
-            customerName: customerName,
-            equipmentId: formData.equipmentId,
-            deviceName: equipment ? `${equipment.brand} ${equipment.model}` : (equipSearch || "Equipo Genérico"),
-            deviceType: equipment ? equipment.type : "Otro",
+            customer_id: formData.clientId || null,
+            customer_name: customerName,
+            equipment_id: formData.equipmentId || null,
+            device_name: equipment ? `${equipment.brand} ${equipment.model}` : (equipSearch || "Equipo Genérico"),
+            device_type: equipment ? equipment.type : "Otro",
             status: formData.status,
             location: formData.location,
-            jobType: formData.jobType,
-            reportedFault: formData.reportedFault,
-            internalNotes: formData.internalNotes,
-            technician: formData.technician,
-            startDate: formData.startDate,
-            estimatedEndDate: formData.estimatedEndDate,
-            selectedItems: formData.selectedItems,
-            totalCost: totalCost,
-            paymentMethod: formData.paymentMethod,
-            probReal: formData.probReal,
-            solReal: formData.solReal,
-            obs: formData.obs,
-            photoBefore: formData.photoBefore,
-            photoAfter: formData.photoAfter,
-            receiverName: formData.receiverName,
-            receiverSignature: formData.receiverSignature
+            job_type: formData.jobType,
+            reported_failure: formData.reportedFault,
+            internal_notes: formData.internalNotes,
+            technician_name: formData.technician,
+            start_date: formData.startDate,
+            estimated_end_date: formData.estimatedEndDate,
+            items: formData.selectedItems,
+            total_cost: totalCost,
+            payment_method: formData.paymentMethod,
+            prob_real: formData.probReal,
+            sol_real: formData.solReal,
+            observations: formData.obs,
+            photo_before: formData.photoBefore,
+            photo_after: formData.photoAfter,
+            receiver_name: formData.receiverName,
+            receiver_signature: formData.receiverSignature
         };
 
-        // Promesa con Toast de carga
-        const promise = editingDbId 
-            ? updateOrder(editingDbId, orderPayload)
-            : createOrder(orderPayload);
+        const promise = (async () => {
+            if (editingDbId) {
+                await updateOrder(editingDbId, orderPayload);
+                if (formData.status === "Finalizado y Pagado") {
+                    await registerCashFlowEntry(editingId, customerName, totalCost, formData.paymentMethod);
+                }
+            } else {
+                await createOrder(orderPayload);
+            }
+        })();
 
         toast.promise(promise, {
-            loading: 'Guardando orden de trabajo...',
-            success: (data) => {
-                // Si finalizamos y pagamos, registramos caja
-                if (editingDbId && formData.status === "Finalizado y Pagado") {
-                    registerCashFlowEntry(editingId, customerName, totalCost, formData.paymentMethod);
-                    return `Orden actualizada y pago registrado ($${totalCost.toLocaleString()})`;
-                }
-                return `Orden ${editingId || 'creada'} correctamente`;
+            loading: 'Guardando orden...',
+            success: () => {
+                setIsModalOpen(false);
+                resetForm();
+                return 'Orden guardada correctamente';
             },
-            error: (err) => `Error al guardar: ${err.message}`
+            error: (err) => `Error: ${err.message}`
         });
-
-        // Cerrar modal tras iniciar el proceso
-        try {
-            await promise;
-            setIsModalOpen(false);
-            resetForm();
-        } catch (error) {
-            // El toast.promise ya maneja el error visualmente
-            console.error(error);
-        }
     };
 
     const resetForm = () => {
@@ -244,6 +241,16 @@ const Taller = () => {
         setFormData({
             ...formData,
             selectedItems: formData.selectedItems.filter(item => item.id !== id)
+        });
+    };
+
+    const updateItemPrice = (id, newPrice) => {
+        const price = parseFloat(newPrice) || 0;
+        setFormData({
+            ...formData,
+            selectedItems: formData.selectedItems.map(item =>
+                item.id === id ? { ...item, price: price } : item
+            )
         });
     };
 
@@ -382,9 +389,39 @@ const Taller = () => {
                             <div className="flex items-center gap-6 text-sm text-slate-500 min-w-[200px] justify-end">
                                 <div className="text-right">
                                     <div className="flex items-center justify-end gap-2 text-xs mb-1"><Calendar size={12} /><span>{repair.date}</span></div>
-                                    <div className={`flex items-center justify-end gap-1 font-bold ${repair.cost > 0 ? 'text-brand-cyan' : 'text-slate-600'}`}><DollarSign size={14} /><span>{repair.cost > 0 ? Number(repair.cost).toLocaleString() : 'Pendiente'}</span></div>
+                                    <div className={`flex items-center justify-end gap-1 font-bold ${repair.total_cost > 0 ? 'text-brand-cyan' : 'text-slate-600'}`}>
+                                        <DollarSign size={14} />
+                                        <span>{repair.total_cost > 0 ? Number(repair.total_cost).toLocaleString('es-CL') : 'Pendiente'}</span>
+                                    </div>
                                 </div>
-                                <button onClick={() => handleEditOrder(repair)} className="p-2 bg-white/5 hover:bg-brand-purple/20 rounded-xl text-slate-400 hover:text-brand-purple transition-all"><MoreVertical size={20} /></button>
+                                
+                                {/* BOTONES DE ACCIÓN */}
+                                <div className="flex gap-2">
+                                    <button 
+                                        onClick={() => generateOrderPDF(repair)} 
+                                        className="p-2 bg-white/5 hover:bg-red-500/20 rounded-xl text-slate-400 hover:text-red-400 transition-all"
+                                        title="Descargar Orden PDF"
+                                    >
+                                        <FileText size={18} />
+                                    </button>
+
+                                    <button 
+                                        onClick={() => handleEditOrder(repair)} 
+                                        className="p-2 bg-white/5 hover:bg-brand-purple/20 rounded-xl text-slate-400 hover:text-brand-purple transition-all"
+                                        title="Editar Orden"
+                                    >
+                                        <MoreVertical size={20} />
+                                    </button>
+
+                                    {/* 👇 BOTÓN ELIMINAR AGREGADO AQUÍ */}
+                                    <button
+                                        onClick={() => handleDeleteOrder(repair.db_id, repair.id)}
+                                        className="p-2 bg-white/5 hover:bg-red-500/20 rounded-xl text-slate-400 hover:text-red-400 transition-all"
+                                        title="Eliminar Orden"
+                                    >
+                                        <Trash2 size={20} />
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -442,72 +479,101 @@ const Taller = () => {
                                                 </select>
                                             </div>
 
-                                            <div className="grid grid-cols-2 gap-2 bg-slate-900 p-2 rounded-lg border border-white/5">
-                                                <div>
-                                                    <label className="text-[9px] uppercase font-bold text-slate-500 block mb-1">Inicio</label>
-                                                    <input 
-                                                        type="datetime-local" 
-                                                        className="w-full bg-slate-950 border border-slate-700 rounded p-1 text-white text-xs"
-                                                        value={formData.startDate}
-                                                        onChange={(e) => setFormData({...formData, startDate: e.target.value})}
-                                                    />
-                                                </div>
-                                                <div>
-                                                    <label className="text-[9px] uppercase font-bold text-slate-500 block mb-1">Fin Estimado</label>
-                                                    <input 
-                                                        type="datetime-local" 
-                                                        className="w-full bg-slate-950 border border-slate-700 rounded p-1 text-white text-xs"
-                                                        value={formData.estimatedEndDate}
-                                                        onChange={(e) => setFormData({...formData, estimatedEndDate: e.target.value})}
-                                                    />
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    <div className="lg:col-span-1 space-y-6">
-                                        <div className="bg-slate-950/50 p-4 rounded-xl border border-white/5 h-full flex flex-col">
-                                            <label className="text-[10px] uppercase font-bold text-slate-500 mb-2 block">Equipo</label>
-                                            <div className="relative mb-4">
-                                                <input type="text" className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-white text-sm" placeholder="Buscar equipo..." value={equipSearch} onChange={(e) => { setEquipSearch(e.target.value); setShowEquipOptions(true); }} onFocus={() => setShowEquipOptions(true)} />
-                                                {showEquipOptions && (
-                                                    <div className="absolute top-full left-0 right-0 mt-2 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl max-h-60 overflow-y-auto z-20">
-                                                        {filteredEquips.map(eq => (
-                                                            <div key={eq.id} onClick={() => { setFormData({ ...formData, equipmentId: eq.id }); setEquipSearch(`${eq.brand} ${eq.model}`); setShowEquipOptions(false); }} className="p-3 hover:bg-white/5 cursor-pointer border-b border-white/5 text-sm text-white">
-                                                                {eq.brand} {eq.model}
-                                                            </div>
-                                                        ))}
-                                                    </div>
-                                                )}
-                                            </div>
-                                            <label className="text-[10px] uppercase font-bold text-slate-500 mb-2 block">Falla Reportada</label>
-                                            <textarea className="w-full h-32 bg-slate-900 border border-slate-700 rounded-lg p-3 text-white resize-none text-sm" value={formData.reportedFault} onChange={(e) => setFormData({ ...formData, reportedFault: e.target.value })}></textarea>
-                                        </div>
-                                    </div>
-
-                                    <div className="lg:col-span-1 space-y-6">
-                                        <div className="bg-slate-950/50 rounded-xl border border-white/5 h-full flex flex-col p-4">
-                                            <label className="text-[10px] uppercase font-bold text-slate-500 mb-2 block">Repuestos / Servicios</label>
-                                            <div className="flex gap-2 mb-2">
-                                                <select id="itemSelect" className="flex-1 bg-slate-900 border border-slate-700 rounded-lg p-2 text-white text-xs"><option value="">Agregar item...</option>{compatibleItems.map(item => <option key={item.id} value={item.id}>{item.name} (${item.price_sell})</option>)}</select>
-                                                <button onClick={() => { const sel = document.getElementById('itemSelect'); const item = inventoryItems.find(i => String(i.id) === sel.value); if(item) addItemToOrder(item); }} className="bg-brand-purple p-2 rounded-lg text-white"><Plus size={16} /></button>
-                                            </div>
-                                            <div className="flex-1 overflow-y-auto space-y-2 custom-scrollbar max-h-[200px]">
-                                                {formData.selectedItems.map((item) => (
-                                                    <div key={item.id} className="bg-slate-800/50 p-2 rounded flex justify-between items-center text-xs text-white">
-                                                        <span>{item.name}</span>
+                                            <div className="space-y-3 pt-2">
+                                                <label className="text-[10px] uppercase font-bold text-slate-500 tracking-widest flex items-center gap-2">
+                                                    <Clock size={12} className="text-brand-purple" />
+                                                    Planificación de Tiempo
+                                                </label>
+                                                <div className="grid grid-cols-2 gap-4">
+                                                    <div className="bg-slate-900 border border-white/10 rounded-xl p-3 flex flex-col gap-1 hover:border-brand-purple/50 transition-all group relative">
+                                                        <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest group-hover:text-brand-purple transition-colors">Fecha Inicio</label>
                                                         <div className="flex items-center gap-2">
-                                                            <span>${item.price}</span>
-                                                            <button onClick={() => removeItemFromOrder(item.id)} className="text-red-400"><Trash2 size={12} /></button>
+                                                            <input 
+                                                                type="datetime-local" 
+                                                                className="bg-transparent text-white text-xs font-mono outline-none w-full uppercase"
+                                                                style={{ colorScheme: "dark" }}
+                                                                value={formData.startDate}
+                                                                onChange={(e) => setFormData({...formData, startDate: e.target.value})}
+                                                            />
                                                         </div>
                                                     </div>
-                                                ))}
+
+                                                    <div className="bg-slate-900 border border-white/10 rounded-xl p-3 flex flex-col gap-1 hover:border-brand-cyan/50 transition-all group relative">
+                                                        <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest group-hover:text-brand-cyan transition-colors">Término (Est.)</label>
+                                                        <div className="flex items-center gap-2">
+                                                            <input 
+                                                                type="datetime-local" 
+                                                                className="bg-transparent text-white text-xs font-mono outline-none w-full uppercase"
+                                                                style={{ colorScheme: "dark" }}
+                                                                value={formData.estimatedEndDate}
+                                                                onChange={(e) => setFormData({...formData, estimatedEndDate: e.target.value})}
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                </div>
                                             </div>
-                                            <div className="mt-4 pt-4 border-t border-white/10 flex justify-between text-white font-bold">
-                                                <span>Total</span>
-                                                <span className="text-brand-cyan">${formData.selectedItems.reduce((acc, i) => acc + i.price, 0).toLocaleString()}</span>
-                                            </div>
+
                                         </div>
+                                    </div>
+
+                                    <div className="lg:col-span-1 space-y-6">
+                                            <div className="bg-slate-950/50 p-4 rounded-xl border border-white/5 h-full flex flex-col">
+                                                <label className="text-[10px] uppercase font-bold text-slate-500 mb-2 block">Equipo</label>
+                                                <div className="relative mb-4">
+                                                    <input type="text" className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-white text-sm" placeholder="Buscar equipo..." value={equipSearch} onChange={(e) => { setEquipSearch(e.target.value); setShowEquipOptions(true); }} onFocus={() => setShowEquipOptions(true)} />
+                                                    {showEquipOptions && (
+                                                        <div className="absolute top-full left-0 right-0 mt-2 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl max-h-60 overflow-y-auto z-20">
+                                                            {filteredEquips.map(eq => (
+                                                                <div key={eq.id} onClick={() => { setFormData({ ...formData, equipmentId: eq.id }); setEquipSearch(`${eq.brand} ${eq.model}`); setShowEquipOptions(false); }} className="p-3 hover:bg-white/5 cursor-pointer border-b border-white/5 text-sm text-white">
+                                                                    {eq.brand} {eq.model}
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                                <label className="text-[10px] uppercase font-bold text-slate-500 mb-2 block">Falla Reportada</label>
+                                                <textarea className="w-full h-32 bg-slate-900 border border-slate-700 rounded-lg p-3 text-white resize-none text-sm" value={formData.reportedFault} onChange={(e) => setFormData({ ...formData, reportedFault: e.target.value })}></textarea>
+                                            </div>
+                                    </div>
+
+                                    <div className="lg:col-span-1 space-y-6">
+                                            <div className="bg-slate-950/50 rounded-xl border border-white/5 h-full flex flex-col p-4">
+                                                <label className="text-[10px] uppercase font-bold text-slate-500 mb-2 block">Repuestos / Servicios</label>
+                                                <div className="flex gap-2 mb-2">
+                                                    <select id="itemSelect" className="flex-1 bg-slate-900 border border-slate-700 rounded-lg p-2 text-white text-xs">
+                                                        <option value="">Agregar item...</option>
+                                                        {compatibleItems.map(item => (
+                                                            <option key={item.id} value={item.id}>
+                                                                {item.name} (${Number(item.price_sell).toLocaleString('es-CL')})
+                                                            </option>
+                                                        ))}
+                                                    </select>
+                                                    <button onClick={() => { const sel = document.getElementById('itemSelect'); const item = inventoryItems.find(i => String(i.id) === sel.value); if(item) addItemToOrder(item); }} className="bg-brand-purple p-2 rounded-lg text-white"><Plus size={16} /></button>
+                                                </div>
+                                                <div className="flex-1 overflow-y-auto space-y-2 custom-scrollbar max-h-[200px]">
+                                                    {formData.selectedItems.map((item) => (
+                                                        <div key={item.id} className="bg-slate-800/50 p-2 rounded flex justify-between items-center text-xs text-white">
+                                                            <span className="flex-1 mr-2">{item.name}</span>
+                                                            <div className="flex items-center gap-2">
+                                                                <div className="flex items-center bg-slate-900 border border-slate-700 rounded px-1">
+                                                                    <span className="text-slate-500 mr-1">$</span>
+                                                                    <input
+                                                                        type="number"
+                                                                        value={item.price}
+                                                                        onChange={(e) => updateItemPrice(item.id, e.target.value)}
+                                                                        className="w-16 bg-transparent text-right outline-none text-brand-cyan font-mono"
+                                                                    />
+                                                                </div>
+                                                                <button onClick={() => removeItemFromOrder(item.id)} className="text-red-400 hover:text-red-300"><Trash2 size={14} /></button>
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                                <div className="mt-4 pt-4 border-t border-white/10 flex justify-between text-white font-bold">
+                                                    <span>Total</span>
+                                                    <span className="text-brand-cyan">${formData.selectedItems.reduce((acc, i) => acc + i.price, 0).toLocaleString('es-CL')}</span>
+                                                </div>
+                                            </div>
                                     </div>
                                 </div>
                             )}
@@ -540,11 +606,9 @@ const Taller = () => {
                             <button onClick={() => setShowScheduler(false)} className="text-slate-400 hover:text-white"><X size={24} /></button>
                         </div>
                         <div className="flex-1 overflow-auto p-6">
-                            {/* Renderizado simple de agenda - usa los técnicos dinámicos */}
                             <div className="grid grid-cols-5 gap-4">
                                 <div className="text-center text-xs text-slate-500 font-bold">HORA</div>
                                 {technicians.map(t => <div key={t} className="text-center text-xs text-white font-bold">{t}</div>)}
-                                {/* Filas de horas... */}
                                 {Array.from({length: 9}, (_, i) => i + 9).map(h => (
                                     <>
                                         <div key={`h-${h}`} className="text-center text-slate-500 text-xs py-2 border-t border-white/5">{h}:00</div>
