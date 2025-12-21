@@ -1,26 +1,31 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { Toaster } from "sonner"; 
+
 import Layout from "./components/Layout";
 import Dashboard from "./pages/Dashboard";
-import Login from "./pages/Login"; // <--- Importamos Login
-import Inventario from "./pages/Inventario"; // Importar arriba
+import Login from "./pages/Login"; // 👈 Solo importamos este Login
+import Inventario from "./pages/Inventario";
 import Clientes from "./pages/Clientes";
 import Equipos from "./pages/Equipos";
-import Pos from "./pages/Pos"; // <--- Importa el nuevo módulo
+import Pos from "./pages/Pos";
 import Taller from "./pages/Taller";
 import FlujoCaja from "./pages/FlujoCaja";
 import PortalTecnico from "./pages/PortalTecnico";
-import LoginTecnico from "./pages/LoginTecnico";
+// import LoginTecnico from "./pages/LoginTecnico"; 👈 ELIMINAR ESTO
 import ProtectedRoute from "./components/ProtectedRoute";
 
 function App() {
   return (
     <BrowserRouter>
+      <Toaster position="top-right" richColors theme="dark" closeButton />
+      
       <Routes>
-        {/* Ruta pública para el Login (Sin Layout/Sidebar) */}
+        {/* Ruta única de Login */}
         <Route path="/login" element={<Login />} />
-        <Route path="/login-tecnico" element={<LoginTecnico />} />
+        
+        {/* ELIMINAR la ruta /login-tecnico */}
 
-        {/* Rutas Administrativas (Requieren rol 'admin') */}
+        {/* Rutas Administrativas */}
         <Route path="/" element={<ProtectedRoute requiredRole="admin"><Layout><Dashboard /></Layout></ProtectedRoute>} />
         <Route path="/flujo-caja" element={<ProtectedRoute requiredRole="admin"><Layout><FlujoCaja /></Layout></ProtectedRoute>} />
         <Route path="/taller" element={<ProtectedRoute requiredRole="admin"><Layout><Taller /></Layout></ProtectedRoute>} />
@@ -29,7 +34,7 @@ function App() {
         <Route path="/clientes" element={<ProtectedRoute requiredRole="admin"><Layout><Clientes /></Layout></ProtectedRoute>} />
         <Route path="/equipos" element={<ProtectedRoute requiredRole="admin"><Layout><Equipos /></Layout></ProtectedRoute>} />
 
-        {/* Ruta del Portal Técnico (Requiere rol 'tecnico' o superior) */}
+        {/* Portal Técnico (Protegido pero accesible por rol tecnico) */}
         <Route path="/portal-tecnico" element={<ProtectedRoute requiredRole="tecnico"><PortalTecnico /></ProtectedRoute>} />
       </Routes>
     </BrowserRouter>

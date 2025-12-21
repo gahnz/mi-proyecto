@@ -60,8 +60,8 @@ export default function ProtectedRoute({ children, requiredRole }) {
     }
 
     if (!session) {
-        // Redirect to the appropriate login page based on the required role
-        return <Navigate to={requiredRole === "technician" ? "/login-tecnico" : "/login"} replace />;
+        // Redirigir SIEMPRE al login unificado
+        return <Navigate to="/login" replace />;
     }
 
     // Jerarquía de roles: admin (2) > coordinador (1) > tecnico (0)

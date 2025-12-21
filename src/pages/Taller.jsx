@@ -12,6 +12,8 @@ import { useWorkOrders } from "../hooks/useWorkOrders";
 import { useCustomers } from "../hooks/useCustomers";
 import { useEquipos } from "../hooks/useEquipos";
 import { useInventory } from "../hooks/useInventory";
+// ... otros imports ...
+import { toast } from "sonner"; // 👈 IMPORTAR
 
 const JOB_TYPES = ["Mantenimiento", "Reparación", "Revisión", "Configuración"];
 const STATUS_LIST = [
@@ -147,16 +149,21 @@ const Taller = () => {
     };
 
     const handleSaveOrder = async () => {
+        // Validación
         if (!formData.clientId || !formData.technician) {
-            alert("Falta Cliente o Técnico.");
+            toast.error("Faltan datos obligatorios", {
+                description: "Por favor selecciona un Cliente y un Técnico."
+            });
             return;
         }
 
+        // ... (cálculos de costos igual que antes) ...
         const totalCost = formData.selectedItems.reduce((acc, item) => acc + (Number(item.price) * (item.quantity || 1)), 0);
         const client = clients.find(c => c.id === formData.clientId);
         const equipment = equipmentsList.find(e => e.id === Number(formData.equipmentId));
         const customerName = client ? (client.business_name || client.full_name) : "Cliente Manual";
 
+        // ... (orderPayload igual que antes) ...
         const orderPayload = {
             clientId: formData.clientId,
             customerName: customerName,
@@ -183,26 +190,32 @@ const Taller = () => {
             receiverSignature: formData.receiverSignature
         };
 
+        // Promesa con Toast de carga
+        const promise = editingDbId 
+            ? updateOrder(editingDbId, orderPayload)
+            : createOrder(orderPayload);
+
+        toast.promise(promise, {
+            loading: 'Guardando orden de trabajo...',
+            success: (data) => {
+                // Si finalizamos y pagamos, registramos caja
+                if (editingDbId && formData.status === "Finalizado y Pagado") {
+                    registerCashFlowEntry(editingId, customerName, totalCost, formData.paymentMethod);
+                    return `Orden actualizada y pago registrado ($${totalCost.toLocaleString()})`;
+                }
+                return `Orden ${editingId || 'creada'} correctamente`;
+            },
+            error: (err) => `Error al guardar: ${err.message}`
+        });
+
+        // Cerrar modal tras iniciar el proceso
         try {
-            if (editingDbId) {
-                await updateOrder(editingDbId, orderPayload);
-                
-                // 👇 DETECTAR SI SE FINALIZÓ Y PAGÓ PARA REGISTRAR EN CAJA
-                if (formData.status === "Finalizado y Pagado") {
-                    await registerCashFlowEntry(editingId, customerName, totalCost, formData.paymentMethod);
-                }
-            } else {
-                await createOrder(orderPayload);
-                // Nota: Al crear nuevo, no tenemos el ID visual 'OT-XXX' retornado por el hook simple, 
-                // así que el registro automático en caja solo funciona bien en el flujo de Actualización.
-                if (formData.status === "Finalizado y Pagado") {
-                    alert("⚠️ Orden creada como Finalizada. Recuerda verificar el ingreso en caja manualmente o editar la orden para sincronizar.");
-                }
-            }
+            await promise;
             setIsModalOpen(false);
             resetForm();
         } catch (error) {
-            alert("Error al guardar: " + error.message);
+            // El toast.promise ya maneja el error visualmente
+            console.error(error);
         }
     };
 
