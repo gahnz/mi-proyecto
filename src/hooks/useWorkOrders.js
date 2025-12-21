@@ -27,6 +27,7 @@ export const useWorkOrders = () => {
         ...o,
         db_id: o.id,               
         id: o.order_id,            
+        
         customer: o.customer_name || "Sin Nombre", 
         device: o.device_name || "Equipo Genérico",     
         type: o.device_type,
@@ -34,9 +35,16 @@ export const useWorkOrders = () => {
         technician: o.technician_name,
         status: o.status,
         date: new Date(o.created_at).toLocaleDateString('es-CL'),
-        total_cost: o.total_cost, // Aseguramos que pase el costo total
+        total_cost: o.total_cost,
+        
+        // 👇 AQUÍ ESTÁ EL CAMBIO IMPORTANTE:
         customer_phone: o.customers?.phone || o.customer_phone || "", 
-        location: o.customers?.address || o.location || "Local",
+        
+        // 1. location: Es la MODALIDAD (Local / Terreno)
+        location: o.location || "Local", 
+        
+        // 2. customer_address: Es la DIRECCIÓN FÍSICA (Calle...)
+        customer_address: o.customers?.address || "No registrada", 
       })));
     }
     setLoading(false);
@@ -62,7 +70,7 @@ export const useWorkOrders = () => {
     await fetchOrders();
   };
 
-  // 4. 👇 NUEVA FUNCIÓN: ELIMINAR ORDEN
+  // 4. Eliminar Orden
   const deleteOrder = async (uuid) => {
     const { error } = await supabase
         .from('work_orders')
@@ -70,7 +78,7 @@ export const useWorkOrders = () => {
         .eq('id', uuid);
 
     if (error) throw error;
-    await fetchOrders(); // Recargar la lista
+    await fetchOrders();
   };
 
   return { orders, loading, createOrder, updateOrder, deleteOrder, refresh: fetchOrders };
