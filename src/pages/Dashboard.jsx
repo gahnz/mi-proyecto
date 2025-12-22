@@ -2,8 +2,12 @@ import { useEffect, useState } from "react";
 import {
   AlertCircle, Wrench, CheckCircle2, DollarSign, TrendingUp,
   ArrowUpRight, ArrowDownRight, Package, ShoppingBag, Landmark,
-  LayoutDashboard, History
+  LayoutDashboard, History, BarChart3, Trophy, Users
 } from "lucide-react";
+// 👇 IMPORTAMOS RECHARTS PARA LOS GRÁFICOS
+import { 
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar 
+} from 'recharts';
 
 // 👇 IMPORTAMOS LOS HOOKS REALES
 import { useWorkOrders } from "../hooks/useWorkOrders";
@@ -27,6 +31,10 @@ export default function Dashboard() {
     movements_count: 0
   });
 
+  // 👇 ESTADOS NUEVOS PARA GRÁFICOS
+  const [salesData, setSalesData] = useState([]);
+  const [techRanking, setTechRanking] = useState([]);
+
   const loading = loadingOrders || loadingCash || loadingInv;
 
   useEffect(() => {
@@ -37,12 +45,12 @@ export default function Dashboard() {
     // 1. Taller Stats
     const waiting = orders.filter(o => o.status === 'En cola').length;
     const active = orders.filter(o => ['Trabajando', 'Revisión del Coordinador'].includes(o.status)).length;
-    // OTs listas para entrega (Pagadas/Notificadas pero aun en taller)
+    // OTs listas para entrega
     const ready = orders.filter(o => ['Pagado y no retirado', 'Notificado y no pagado'].includes(o.status)).length;
 
     // 2. Finanzas Stats (Mes Actual)
-    const currentMonth = new Date().toISOString().slice(0, 7); // YYYY-MM
-    const monthMovements = movements.filter(m => m.date && m.date.startsWith(currentMonth));
+    const currentMonthISO = new Date().toISOString().slice(0, 7); // YYYY-MM
+    const monthMovements = movements.filter(m => m.date && m.date.startsWith(currentMonthISO));
 
     const revenue = monthMovements
       .filter(m => m.type === 'income')
@@ -62,6 +70,46 @@ export default function Dashboard() {
       const totalStock = Object.values(i.stocksByWarehouse || {}).reduce((a, b) => a + b, 0);
       return acc + (totalStock * (i.price_cost || 0));
     }, 0);
+
+    // --- 🔥 LOGICA NUEVA PARA GRÁFICOS ---
+
+    // A. Datos para Gráfico de Ventas (Agrupar por día)
+    const incomeByDay = monthMovements
+        .filter(m => m.type === 'income')
+        .reduce((acc, curr) => {
+            const day = curr.date.split('T')[0].split('-')[2]; // Sacar solo el día (01, 02, etc)
+            acc[day] = (acc[day] || 0) + Number(curr.totalAmount);
+            return acc;
+        }, {});
+    
+    // Rellenar días del gráfico y ordenar
+    const chartData = Object.keys(incomeByDay).map(day => ({
+        name: `Día ${day}`,
+        ventas: incomeByDay[day]
+    })).sort((a, b) => a.name.localeCompare(b.name));
+
+    // B. Ranking de Técnicos (Basado en órdenes finalizadas este mes)
+    // Filtramos órdenes que tengan fecha de término este mes (o creación si no tienes término)
+    const finishedThisMonth = orders.filter(o => 
+        o.status === 'Finalizado y Pagado' && 
+        o.date && o.date.includes(new Date().getMonth() + 1 + "") // Ajuste simple de fecha
+    );
+
+    const rankingMap = orders.reduce((acc, curr) => {
+        // Contamos todas las órdenes asignadas (o solo finalizadas si prefieres)
+        if(curr.technician && curr.status === 'Finalizado y Pagado') {
+            acc[curr.technician] = (acc[curr.technician] || 0) + 1;
+        }
+        return acc;
+    }, {});
+
+    const rankingArray = Object.keys(rankingMap).map(tech => ({
+        name: tech,
+        count: rankingMap[tech]
+    })).sort((a, b) => b.count - a.count).slice(0, 3); // Top 3
+
+    setSalesData(chartData);
+    setTechRanking(rankingArray);
 
     setStats({
       waiting_count: waiting,
@@ -111,7 +159,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* PRIMARY STATS GRID */}
+      {/* PRIMARY STATS GRID (Sin cambios) */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
 
         {/* TALLER STATS */}
@@ -193,8 +241,77 @@ export default function Dashboard() {
 
       </div>
 
+      {/* 🔥 ZONA DE INTELIGENCIA (NUEVA SECCIÓN INSERTADA) */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* RECENT ACTIVITY */}
+          
+          {/* GRÁFICO DE VENTAS */}
+          <div className="lg:col-span-2 bg-slate-900/50 rounded-[2.5rem] border border-white/5 backdrop-blur-md p-8">
+              <div className="flex items-center justify-between mb-6">
+                  <div>
+                      <h3 className="text-xl font-black text-white uppercase italic tracking-tighter">Tendencia de Ventas</h3>
+                      <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Ingresos por día (Mes actual)</p>
+                  </div>
+                  <div className="p-2 bg-emerald-500/10 rounded-xl text-emerald-500"><BarChart3 size={20}/></div>
+              </div>
+              <div className="h-[250px] w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={salesData}>
+                          <defs>
+                              <linearGradient id="colorVentas" x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
+                                  <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                              </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
+                          <XAxis dataKey="name" stroke="#64748b" fontSize={10} tickLine={false} axisLine={false} />
+                          <YAxis stroke="#64748b" fontSize={10} tickLine={false} axisLine={false} tickFormatter={(v) => `$${v/1000}k`} />
+                          <Tooltip 
+                              contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '12px', color: '#fff' }}
+                              itemStyle={{ color: '#10b981' }}
+                              formatter={(value) => [formatCurrency(value), 'Ventas']}
+                          />
+                          <Area type="monotone" dataKey="ventas" stroke="#10b981" strokeWidth={3} fillOpacity={1} fill="url(#colorVentas)" />
+                      </AreaChart>
+                  </ResponsiveContainer>
+              </div>
+          </div>
+
+          {/* RANKING TÉCNICOS */}
+          <div className="bg-slate-900/50 rounded-[2.5rem] border border-white/5 backdrop-blur-md p-8">
+              <div className="flex items-center justify-between mb-6">
+                  <div>
+                      <h3 className="text-xl font-black text-white uppercase italic tracking-tighter">Top Técnicos</h3>
+                      <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Mayor productividad</p>
+                  </div>
+                  <div className="p-2 bg-amber-500/10 rounded-xl text-amber-500"><Trophy size={20}/></div>
+              </div>
+              <div className="space-y-4">
+                  {techRanking.length === 0 ? (
+                      <div className="text-center py-8 text-slate-600 text-xs">Sin datos suficientes</div>
+                  ) : (
+                      techRanking.map((tech, index) => (
+                          <div key={tech.name} className="flex items-center gap-4 group">
+                              <div className={`w-8 h-8 rounded-full flex items-center justify-center font-black text-xs ${index === 0 ? 'bg-amber-400 text-black' : 'bg-slate-800 text-slate-400'}`}>
+                                  {index + 1}
+                              </div>
+                              <div className="flex-1">
+                                  <div className="flex justify-between items-center mb-1">
+                                      <span className="text-sm font-bold text-white">{tech.name}</span>
+                                      <span className="text-xs font-mono text-brand-purple">{tech.count} OTs</span>
+                                  </div>
+                                  <div className="w-full bg-slate-950 h-1.5 rounded-full overflow-hidden">
+                                      <div className="bg-gradient-to-r from-brand-purple to-brand-cyan h-full rounded-full" style={{ width: `${(tech.count / (techRanking[0].count || 1)) * 100}%` }}></div>
+                                  </div>
+                              </div>
+                          </div>
+                      ))
+                  )}
+              </div>
+          </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* RECENT ACTIVITY (Sin cambios, solo desplazado abajo) */}
         <div className="lg:col-span-2 bg-slate-900/50 rounded-[2.5rem] border border-white/5 backdrop-blur-md p-8 overflow-hidden">
           <div className="flex items-center justify-between mb-8">
             <div className="flex items-center gap-4">
@@ -235,7 +352,7 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* QUICK STATS / SYSTEM INFO */}
+        {/* QUICK STATS / SYSTEM INFO (Sin cambios) */}
         <div className="bg-slate-900/50 rounded-[2.5rem] border border-white/5 backdrop-blur-md p-8">
           <h3 className="text-xl font-black text-white uppercase italic tracking-tighter mb-8">Estado de Red</h3>
           <div className="space-y-6">

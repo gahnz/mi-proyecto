@@ -169,7 +169,7 @@ export default function Clientes() {
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center z-[100] p-4">
           <div className="bg-slate-900 border border-white/10 w-full max-w-2xl rounded-3xl shadow-2xl overflow-hidden border-t-brand-cyan border-t-4 max-h-[90vh] flex flex-col">
             <div className="p-6 border-b border-white/5 flex justify-between items-center bg-slate-900/50">
-              <h2 className="text-xl font-black text-white uppercase italic tracking-tight italic">
+              <h2 className="text-xl font-black text-white uppercase tracking-tight italic">
                 {editingId ? 'Actualizar Cliente' : 'Nuevo Registro de Cliente'}
               </h2>
               <X className="text-slate-500 cursor-pointer hover:text-white" onClick={closeModal} />
@@ -244,7 +244,7 @@ export default function Clientes() {
                 </div>
 
                 <div className="col-span-2">
-                  <label className="text-[10px] uppercase font-bold text-slate-500 ml-1 mb-1 block tracking-widest flex items-center gap-1"><Info size={12} /> Información Adicional</label>
+                  <label className="text-[10px] uppercase font-bold text-slate-500 ml-1 mb-1 tracking-widest flex items-center gap-1"><Info size={12} /> Información Adicional</label>
                   <textarea rows="2" className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-white outline-none focus:border-brand-cyan resize-none" placeholder="Notas sobre el cliente, horarios, deudas..." value={formData.observations} onChange={(e) => setFormData({ ...formData, observations: e.target.value })} />
                 </div>
               </div>

@@ -438,7 +438,7 @@ const FlujoCaja = () => {
                             
                             {/* 1. SELECCIÓN DE PRODUCTO */}
                             <div className="relative">
-                                <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1 flex items-center gap-2">
+                                <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 flex items-center gap-2">
                                     <PackageMinus size={12} className="text-rose-400" /> 
                                     1. Producto vendido (Salida Stock)
                                 </label>
@@ -474,7 +474,7 @@ const FlujoCaja = () => {
                             {/* 2. ORIGEN DEL STOCK */}
                             <div className="grid grid-cols-2 gap-4">
                                 <div>
-                                    <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1 flex items-center gap-2"><Store size={12} /> Descontar de</label>
+                                    <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 flex items-center gap-2"><Store size={12} /> Descontar de</label>
                                     <select className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={formData.warehouse} onChange={(e) => setFormData({ ...formData, warehouse: e.target.value })}>
                                         {WAREHOUSES.map(w => <option key={w} value={w}>{w}</option>)}
                                     </select>
@@ -488,7 +488,7 @@ const FlujoCaja = () => {
                             {/* 3. RECUADRO DE CÁLCULO */}
                             <div className="bg-slate-950 p-5 rounded-2xl border border-white/5 relative overflow-hidden">
                                 <div className="absolute top-0 right-0 p-2 opacity-10"><Calculator size={100} className="text-white" /></div>
-                                <label className="text-[10px] font-bold text-slate-500 uppercase block mb-3 flex items-center gap-2 relative z-10"><DollarSign size={12} /> 2. Conciliación Financiera</label>
+                                <label className="text-[10px] font-bold text-slate-500 uppercase mb-3 flex items-center gap-2 relative z-10"><DollarSign size={12} /> 2. Conciliación Financiera</label>
                                 
                                 <div className="space-y-3 relative z-10">
                                     {/* PRECIO VENTA */}

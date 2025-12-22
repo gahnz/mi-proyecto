@@ -11,7 +11,9 @@ import { supabase } from "../supabase/client";
 import { useNavigate } from "react-router-dom";
 import { useWorkOrders } from "../hooks/useWorkOrders";
 // import { generateOrderPDF } from "../utils/pdfGenerator"; // YA NO SE USA AQUÍ
-import { getChileTime } from "../utils/time"; 
+import { getChileTime } from "../utils/time";
+// 👇 IMPORTAMOS LA LIBRERÍA DE COMPRESIÓN
+import imageCompression from 'browser-image-compression';
 
 export default function PortalTecnico() {
   const navigate = useNavigate();
@@ -100,19 +102,60 @@ export default function PortalTecnico() {
     });
   };
 
+  // 🔥 FUNCIÓN DE SUBIDA DE IMAGEN OPTIMIZADA
   const handleImageUpload = async (event, field) => {
+    const imageFile = event.target.files[0];
+    if (!imageFile) return;
+
+    setUploading(true);
+
+    // Opciones de compresión
+    const options = {
+      maxSizeMB: 1,          // Máximo 1MB
+      maxWidthOrHeight: 1920, // Máxima resolución Full HD
+      useWebWorker: true,    // Usa un hilo separado para no congelar la app
+      fileType: 'image/jpeg' // Asegura formato JPEG
+    };
+
     try {
-        const file = event.target.files[0];
-        if (!file) return;
-        setUploading(true);
-        const fileExt = file.name.split('.').pop();
+        toast.loading("Comprimiendo imagen...", { id: "upload-toast" });
+        
+        // 1. Comprimir la imagen
+        const compressedFile = await imageCompression(imageFile, options);
+        
+        toast.loading("Subiendo a la nube...", { id: "upload-toast" });
+
+        // 2. Preparar nombre de archivo y ruta
+        const fileExt = 'jpg'; // Siempre será jpg por la compresión
         const fileName = `${selectedOrder.id}_${field}_${Date.now()}.${fileExt}`;
-        const { error: uploadError } = await supabase.storage.from('repair-images').upload(fileName, file);
+        const filePath = `evidencia/${fileName}`; // Guardar en subcarpeta 'evidencia'
+
+        // 3. Subir a Supabase
+        const { error: uploadError } = await supabase.storage
+            .from('repair-images')
+            .upload(filePath, compressedFile, {
+                cacheControl: '3600',
+                upsert: false
+            });
+
         if (uploadError) throw uploadError;
-        const { data: { publicUrl } } = supabase.storage.from('repair-images').getPublicUrl(fileName);
+
+        // 4. Obtener URL pública
+        const { data: { publicUrl } } = supabase.storage
+            .from('repair-images')
+            .getPublicUrl(filePath);
+
+        // 5. Actualizar formulario
         setEditForm(prev => ({ ...prev, [field]: publicUrl }));
-        toast.success("Imagen guardada");
-    } catch (error) { toast.error("Error: " + error.message); } finally { setUploading(false); }
+        
+        toast.success("Imagen optimizada y guardada exitosamente", { id: "upload-toast" });
+
+    } catch (error) {
+        console.error("Error en proceso de imagen:", error);
+        toast.error("Error al procesar la imagen: " + error.message, { id: "upload-toast" });
+    } finally {
+        setUploading(false);
+    }
   };
 
   const dataURLtoBlob = (dataURL) => {
@@ -133,7 +176,7 @@ export default function PortalTecnico() {
         try {
             const signatureDataUrl = sigPad.current.getCanvas().toDataURL('image/png');
             const signatureBlob = dataURLtoBlob(signatureDataUrl);
-            const fileName = `${selectedOrder.id}_signature_${Date.now()}.png`;
+            const fileName = `firmas/${selectedOrder.id}_signature_${Date.now()}.png`; // Guardar en subcarpeta 'firmas'
             const { error: uploadError } = await supabase.storage.from('repair-images').upload(fileName, signatureBlob);
             if (uploadError) throw uploadError;
             const { data: { publicUrl } } = supabase.storage.from('repair-images').getPublicUrl(fileName);
@@ -197,7 +240,6 @@ export default function PortalTecnico() {
       <div className="p-4 space-y-4">
         <h2 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Mis Asignaciones ({myOrders.length})</h2>
         
-        {/* 👇 AQUÍ EL CAMBIO: Texto más claro y sin opacidad */}
         {myOrders.length === 0 ? ( 
             <div className="text-center py-20 text-slate-300 text-sm font-medium">No tienes órdenes activas.<br/>¡Buen trabajo! 🎉</div> 
         ) : (
@@ -242,7 +284,6 @@ export default function PortalTecnico() {
                         )}
 
                         <div className="flex gap-2">
-                            {/* 👇 AQUÍ EL CAMBIO: Se eliminó el botón <button><FileText/></button> */}
                             <div className="p-2 bg-slate-800 rounded-full text-slate-600"><ChevronRight size={16} /></div>
                         </div>
                     </div>
@@ -265,7 +306,7 @@ export default function PortalTecnico() {
               
               {/* DATOS DEL CLIENTE EN MODAL */}
               <div className="bg-slate-950 p-4 rounded-xl border border-white/5 space-y-3">
-                 <label className="text-[10px] font-black text-brand-purple uppercase tracking-widest mb-1 block flex items-center gap-2">
+                 <label className="text-[10px] font-black text-brand-purple uppercase tracking-widest mb-1 flex items-center gap-2">
                     <User size={12} /> Cliente
                  </label>
                  <div>
@@ -274,7 +315,7 @@ export default function PortalTecnico() {
                         <div className="flex items-start gap-3 text-slate-400 text-xs">
                             <MapPin size={14} className="text-brand-cyan mt-0.5 shrink-0" />
                             <div className="leading-tight w-full">
-                                <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(selectedOrder.customer_address || "")}`} target="_blank" rel="noopener noreferrer" className="hover:text-white hover:underline block mb-1">
+                                <a href={`https://www.google.com/maps/search/?api=1&query={encodeURIComponent(selectedOrder.customer_address || "")}`} target="_blank" rel="noopener noreferrer" className="hover:text-white hover:underline block mb-1">
                                     {selectedOrder.customer_address || "Sin dirección registrada"}
                                 </a>
                                 {selectedOrder.customer_commune && (
@@ -309,7 +350,7 @@ export default function PortalTecnico() {
 
               {/* EVIDENCIA */}
               <div className="bg-slate-950 p-4 rounded-xl border border-white/5 space-y-4">
-                 <label className="text-[10px] font-black text-brand-purple uppercase tracking-widest mb-2 block flex items-center gap-2"><Camera size={12} /> Evidencia</label>
+                 <label className="text-[10px] font-black text-brand-purple uppercase tracking-widest mb-2 flex items-center gap-2"><Camera size={12} /> Evidencia</label>
                  <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
                         <label className="text-[10px] font-bold text-slate-500 uppercase block text-center">Ingreso</label>
@@ -343,7 +384,7 @@ export default function PortalTecnico() {
 
               {/* FIRMA */}
               <div className="bg-slate-950 p-4 rounded-xl border border-white/5 space-y-3">
-                 <label className="text-[10px] font-black text-emerald-500 uppercase tracking-widest mb-2 block flex items-center gap-2"><PenTool size={12} /> Recepción Conforme</label>
+                 <label className="text-[10px] font-black text-emerald-500 uppercase tracking-widest mb-2 flex items-center gap-2"><PenTool size={12} /> Recepción Conforme</label>
                  <div><label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Nombre Quien Recibe</label><input className="w-full bg-slate-900 border border-white/10 rounded-lg p-3 text-white text-sm outline-none focus:border-emerald-500" placeholder="Nombre completo..." value={editForm.receiverName} onChange={(e) => setEditForm({...editForm, receiverName: e.target.value})} /></div>
                  <div>
                     <div className="flex justify-between items-center mb-1">
