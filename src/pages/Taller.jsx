@@ -1,10 +1,10 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
     Plus, Search, CheckCircle2, AlertCircle, MoreVertical,
     Smartphone, Laptop, Tablet, User, Calendar, DollarSign,
     MapPin, Clock, FileText, PenTool, X, Trash2,
     Save, Monitor, Printer, Cpu, Lock, Share2,
-    Receipt, UploadCloud, FileCheck
+    Receipt, UploadCloud, FileCheck, BoxSelect
 } from "lucide-react";
 import { supabase } from "../supabase/client";
 import { toast } from "sonner"; 
@@ -25,205 +25,73 @@ const STATUS_LIST = [
 const DOC_TYPES = ["Boleta", "Factura", "Voucher Interno", "Guía de Despacho"];
 
 const Taller = () => {
-    // Eliminamos createBulkOrders del destructuring
+    // Hooks
     const { orders: repairs, loading, createOrder, updateOrder, deleteOrder } = useWorkOrders();
     const { customers: clients } = useCustomers();
     const { equipments: equipmentsList } = useEquipos();
     const { inventory: inventoryItems } = useInventory();
 
+    // Local State
     const [technicians, setTechnicians] = useState([]);
     const [filterStatus, setFilterStatus] = useState("Todos");
     const [filterLocation, setFilterLocation] = useState("Todos");
     const [filterTech, setFilterTech] = useState("Todos");
     const [searchTerm, setSearchTerm] = useState("");
 
+    // Modal & Interaction State
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [editingId, setEditingId] = useState(null);
     const [editingDbId, setEditingDbId] = useState(null);
     const [activeTab, setActiveTab] = useState("order");
     const [showScheduler, setShowScheduler] = useState(false);
-    
     const [schedulerDate, setSchedulerDate] = useState(getChileTime().split('T')[0]);
 
+    // Search & Autocomplete State
     const [equipSearch, setEquipSearch] = useState("");
     const [showEquipOptions, setShowEquipOptions] = useState(false);
-    const [clientSearch, setClientSearch] = useState(""); 
-    const [showClientOptions, setShowClientOptions] = useState(false); 
+    const [clientSearch, setClientSearch] = useState("");
+    const [showClientOptions, setShowClientOptions] = useState(false);
     const [uploadingDoc, setUploadingDoc] = useState(false);
 
+    // Form Data State
     const [formData, setFormData] = useState({
-        status: "En cola", location: "Local", equipmentId: "", jobType: "Reparación", reportedFault: "", clientId: "", technician: "",
-        startDate: getChileTime().slice(0, 16), estimatedEndDate: "", 
-        internalNotes: "", 
+        status: "En cola",
+        location: "Local",
+        equipmentId: "",
+        jobType: "Reparación",
+        reportedFault: "",
+        clientId: "",
+        technician: "",
+        startDate: getChileTime().slice(0, 16),
+        estimatedEndDate: "",
+        internalNotes: "",
         selectedItems: [],
-        probReal: "", solReal: "", obs: "", 
-        photoBefore: null, photoAfter: null, receiverName: "", receiverSignature: null, paymentMethod: "Efectivo",
-        docType: "Boleta", docNumber: "", docUrl: "", docFile: null 
+        probReal: "", solReal: "", obs: "",
+        photoBefore: null, photoAfter: null,
+        receiverName: "", receiverSignature: null,
+        paymentMethod: "Efectivo",
+        docType: "Boleta", docNumber: "", docUrl: "", docFile: null,
+        stockDeducted: false
     });
 
     useEffect(() => {
         const fetchTechnicians = async () => {
-            const { data } = await supabase.from("profiles").select("full_name").in("role", ["tecnico", "coordinador", "admin"]);
+            const { data } = await supabase
+                .from("profiles")
+                .select("full_name")
+                .in("role", ["tecnico", "coordinador", "admin"]);
             if (data) setTechnicians(data.map(t => t.full_name).filter(Boolean));
         };
         fetchTechnicians();
     }, []);
 
+    // Helper Functions
     const smartSearch = (text, search) => {
+        if (!text || !search) return false;
         const searchTerms = search.toLowerCase().split(" ").filter(Boolean);
         const textLower = text.toLowerCase();
         return searchTerms.every(term => textLower.includes(term));
     };
-
-    const filteredClients = clients.filter(c => {
-        const searchString = `${c.full_name || ""} ${c.business_name || ""} ${c.rut || ""}`;
-        return smartSearch(searchString, clientSearch);
-    });
-
-    const filteredEquips = equipmentsList.filter(eq => {
-        const searchString = `${eq.brand} ${eq.model} ${eq.type}`;
-        return smartSearch(searchString, equipSearch);
-    });
-
-    const handleShareLink = (e, orderId) => {
-        e.stopPropagation();
-        const link = `${window.location.origin}/tracker/${orderId}`;
-        navigator.clipboard.writeText(link).then(() => {
-            toast.success("🔗 Link copiado", { description: "Envíalo al cliente para seguimiento." });
-        });
-    };
-
-    const registerCashFlowEntry = async (orderId, customerName, total, method) => {
-        if (!orderId) return;
-        const { data: existing } = await supabase.from('cash_flow').select('id').ilike('description', `%${orderId}%`).limit(1);
-        if (existing && existing.length > 0) return;
-        const neto = Math.round(total / 1.19);
-        const tax = total - neto;
-        const { error } = await supabase.from('cash_flow').insert([{
-            date: getChileTime().split('T')[0], type: 'income', category: 'VENTA', description: `Servicio Técnico ${orderId} | ${customerName}`, payment_method: method, total_amount: total, net_amount: neto, tax_amount: tax, doc_type: 'VOU', doc_number: orderId.replace('OT-', ''), is_ecommerce: false
-        }]);
-        if (error) console.error("Error caja:", error); else toast.success(`💰 Ingreso de $${total.toLocaleString('es-CL')} registrado.`);
-    };
-
-    const handleEditOrder = (repair) => {
-        setEditingId(repair.id);
-        setEditingDbId(repair.db_id);
-        setActiveTab("order");
-        const clientID = repair.customer_id; 
-        const foundClient = clients.find(c => c.id === clientID);
-        const clientName = foundClient ? (foundClient.business_name || foundClient.full_name) : (repair.customer || "");
-        setFormData({
-            status: repair.status || "En cola", location: repair.location || "Local", equipmentId: repair.equipment_id || "", 
-            jobType: repair.job_type || "Reparación", reportedFault: repair.reported_failure || "", clientId: clientID || "", 
-            technician: repair.technician_name || "", internalNotes: repair.internal_notes || "", 
-            startDate: repair.start_date ? repair.start_date.slice(0, 16) : "",
-            estimatedEndDate: repair.estimated_end_date ? repair.estimated_end_date.slice(0, 16) : "",
-            selectedItems: repair.items || [], probReal: repair.prob_real || "", solReal: repair.sol_real || "", obs: repair.observations || "",
-            photoBefore: repair.photo_before || null, photoAfter: repair.photo_after || null, receiverName: repair.receiver_name || "", 
-            receiverSignature: repair.receiver_signature || null, paymentMethod: repair.payment_method || "Efectivo",
-            docType: repair.doc_type || "Boleta",
-            docNumber: repair.doc_number || "",
-            docUrl: repair.doc_url || "",
-            docFile: null
-        });
-        setEquipSearch(repair.device || repair.device_name || "");
-        setClientSearch(clientName); 
-        setIsModalOpen(true);
-    };
-
-    const handleDeleteOrder = async (uuid, orderId) => {
-        if (window.confirm(`⚠️ ¿Eliminar orden ${orderId}?`)) {
-            const promise = deleteOrder(uuid);
-            toast.promise(promise, { loading: 'Eliminando...', success: 'Orden eliminada', error: 'Error al eliminar' });
-        }
-    };
-
-    const handleSaveOrder = async () => {
-        const missingFields = [];
-        if (!formData.clientId) missingFields.push("Cliente");
-        if (!formData.technician) missingFields.push("Técnico");
-        if (!formData.startDate) missingFields.push("Fecha Inicio");
-        if (!formData.estimatedEndDate) missingFields.push("Fecha Término (Est.)");
-        if (!formData.equipmentId && (!equipSearch || equipSearch.trim() === "")) missingFields.push("Equipo");
-        if (formData.selectedItems.length === 0) missingFields.push("Al menos 1 Item");
-        if (!formData.reportedFault) missingFields.push("Falla Reportada");
-
-        if (missingFields.length > 0) {
-            toast.error("Faltan datos", { description: missingFields.join(", ") });
-            return;
-        }
-
-        let finalDocUrl = formData.docUrl;
-
-        if (formData.docFile) {
-            setUploadingDoc(true);
-            try {
-                const fileExt = formData.docFile.name.split('.').pop();
-                const fileName = `docs/${editingId || 'new'}_${Date.now()}.${fileExt}`;
-                const { error: uploadError } = await supabase.storage.from('repair-images').upload(fileName, formData.docFile);
-                
-                if (uploadError) throw uploadError;
-                
-                const { data: { publicUrl } } = supabase.storage.from('repair-images').getPublicUrl(fileName);
-                finalDocUrl = publicUrl;
-            } catch (error) {
-                console.error("Error subiendo documento:", error);
-                toast.error("Error al subir el documento PDF");
-                setUploadingDoc(false);
-                return;
-            }
-            setUploadingDoc(false);
-        }
-
-        const totalCost = formData.selectedItems.reduce((acc, item) => acc + (Number(item.price) * (item.quantity || 1)), 0);
-        const client = clients.find(c => c.id === formData.clientId);
-        const equipment = equipmentsList.find(e => e.id === Number(formData.equipmentId));
-        const customerName = client ? (client.business_name || client.full_name) : "Cliente Manual";
-
-        const orderPayload = {
-            customer_id: formData.clientId || null, customer_name: customerName,
-            equipment_id: formData.equipmentId || null, device_name: equipment ? `${equipment.brand} ${equipment.model}` : (equipSearch || "Equipo Genérico"),
-            device_type: equipment ? equipment.type : "Otro",
-            status: formData.status, location: formData.location, job_type: formData.jobType, reported_failure: formData.reportedFault,
-            internal_notes: formData.internalNotes, technician_name: formData.technician,
-            start_date: formData.startDate, estimated_end_date: formData.estimatedEndDate,
-            items: formData.selectedItems, total_cost: totalCost, payment_method: formData.paymentMethod,
-            prob_real: formData.probReal, sol_real: formData.solReal, observations: formData.obs,
-            photo_before: formData.photoBefore, photo_after: formData.photoAfter,
-            receiver_name: formData.receiverName, receiver_signature: formData.receiverSignature,
-            doc_type: formData.docType,
-            doc_number: formData.docNumber,
-            doc_url: finalDocUrl
-        };
-
-        const promise = (async () => {
-            if (editingDbId) {
-                await updateOrder(editingDbId, orderPayload);
-                if (formData.status === "Finalizado y Pagado") { await registerCashFlowEntry(editingId, customerName, totalCost, formData.paymentMethod); }
-            } else { await createOrder(orderPayload); }
-        })();
-
-        toast.promise(promise, { loading: 'Guardando...', success: () => { setIsModalOpen(false); resetForm(); return 'Guardado correctamente'; }, error: (err) => `Error: ${err.message}` });
-    };
-
-    const resetForm = () => {
-        setFormData({
-            status: "En cola", location: "Local", equipmentId: "", jobType: "Reparación", reportedFault: "", clientId: "", technician: "",
-            startDate: getChileTime().slice(0, 16), estimatedEndDate: "", internalNotes: "", selectedItems: [],
-            probReal: "", solReal: "", obs: "", photoBefore: null, photoAfter: null, receiverName: "", receiverSignature: null, paymentMethod: "Efectivo",
-            docType: "Boleta", docNumber: "", docUrl: "", docFile: null
-        });
-        setEquipSearch(""); setClientSearch(""); setShowEquipOptions(false); setShowClientOptions(false);
-        setEditingId(null); setEditingDbId(null); setActiveTab("order"); setUploadingDoc(false);
-    };
-
-    const addItemToOrder = (item) => {
-        if (formData.selectedItems.some(i => i.id === item.id)) return;
-        setFormData({ ...formData, selectedItems: [...formData.selectedItems, { id: item.id, name: item.name, price: item.price_sell, quantity: 1 }] });
-    };
-
-    const removeItemFromOrder = (id) => { setFormData({ ...formData, selectedItems: formData.selectedItems.filter(item => item.id !== id) }); };
-    const updateItemPrice = (id, newPrice) => { setFormData({ ...formData, selectedItems: formData.selectedItems.map(item => item.id === id ? { ...item, price: parseFloat(newPrice) || 0 } : item) }); };
 
     const getStatusColor = (status) => {
         switch (status) {
@@ -246,6 +114,17 @@ const Taller = () => {
         }
     };
 
+    // Filter Logic
+    const filteredClients = clients.filter(c => {
+        const searchString = `${c.full_name || ""} ${c.business_name || ""} ${c.rut || ""}`;
+        return smartSearch(searchString, clientSearch);
+    });
+
+    const filteredEquips = equipmentsList.filter(eq => {
+        const searchString = `${eq.brand} ${eq.model} ${eq.type}`;
+        return smartSearch(searchString, equipSearch);
+    });
+
     const filteredRepairs = repairs.filter(repair => {
         let matchesStatus = true;
         if (filterStatus !== "Todos") {
@@ -254,23 +133,278 @@ const Taller = () => {
             else if (filterStatus === "Finalizados") matchesStatus = ["Finalizado y Pagado", "Cancelado"].includes(repair.status);
             else matchesStatus = repair.status === filterStatus;
         }
-        const matchesLocation = filterLocation === "Todos" || (repair.location || "Local") === filterLocation;
+        
+        const matchesLocation = filterLocation === "Todos" || (repair.location || "Local") === filterLocation; 
         const matchesTech = filterTech === "Todos" || (repair.technician || "").includes(filterTech);
         const searchableString = `${repair.customer || ""} ${repair.id || ""} ${repair.device || ""} ${repair.status || ""}`;
-        const matchesSearch = smartSearch(searchableString, searchTerm);
+        const matchesSearch = searchTerm === "" || smartSearch(searchableString, searchTerm);
+
         return matchesStatus && matchesSearch && matchesLocation && matchesTech;
     });
 
-    const selectedEquipmentObj = equipmentsList.find(e => e.id === Number(formData.equipmentId));
-    const compatibleItems = selectedEquipmentObj ? inventoryItems.filter(item => !item.compatible_models || item.compatible_models.length === 0 || item.compatible_models.includes(`${selectedEquipmentObj.brand} ${selectedEquipmentObj.model}`)) : [];
+    // 🔥🔥🔥 LÓGICA DE FILTRADO CORREGIDA (PARA SERVICIOS Y REPUESTOS) 🔥🔥🔥
+    const compatibleItems = useMemo(() => {
+        // 1. Obtenemos el equipo seleccionado
+        const selectedEquipmentObj = equipmentsList.find(e => e.id === Number(formData.equipmentId));
+
+        // 2. Si NO hay equipo seleccionado, mostrar SOLO Servicios Genéricos (sin modelos asignados)
+        if (!selectedEquipmentObj) {
+            return inventoryItems.filter(i => i.type === 'Servicio' && (!i.compatible_models || i.compatible_models.length === 0));
+        }
+
+        // 3. Normalizamos el nombre del equipo
+        const fullDeviceName = `${selectedEquipmentObj.brand} ${selectedEquipmentObj.model}`.toLowerCase().trim();
+
+        return inventoryItems.filter(item => {
+            const models = item.compatible_models || [];
+
+            // A. SERVICIOS GENÉRICOS (Sin lista de modelos) -> MOSTRAR SIEMPRE
+            if (item.type === 'Servicio' && models.length === 0) {
+                return true;
+            }
+
+            // B. REPUESTOS/CONSUMIBLES SIN LISTA -> OCULTAR (Por seguridad)
+            if (item.type !== 'Servicio' && models.length === 0) {
+                return false;
+            }
+
+            // C. ITEMS ESPECÍFICOS (Servicios Específicos o Repuestos con lista)
+            // Deben coincidir con el equipo seleccionado
+            const isMatch = models.some(modelString => {
+                const cleanModelString = modelString.toLowerCase().trim();
+                return fullDeviceName.includes(cleanModelString) || cleanModelString.includes(fullDeviceName);
+            });
+
+            return isMatch;
+        });
+    }, [inventoryItems, formData.equipmentId, equipmentsList]);
 
     const showFiscalFields = !['En cola', 'Trabajando'].includes(formData.status);
 
+    // Actions
+    const handleShareLink = (e, orderId) => {
+        e.stopPropagation();
+        const link = `${window.location.origin}/tracker/${orderId}`;
+        navigator.clipboard.writeText(link).then(() => {
+            toast.success("🔗 Link copiado", { description: "Envíalo al cliente para seguimiento." });
+        });
+    };
+
+    const registerCashFlowEntry = async (orderId, customerName, total, method) => {
+        if (!orderId) return;
+        const { data: existing } = await supabase.from('cash_flow').select('id').ilike('description', `%${orderId}%`).limit(1);
+        if (existing && existing.length > 0) return;
+
+        const neto = Math.round(total / 1.19);
+        const tax = total - neto;
+        
+        const { error } = await supabase.from('cash_flow').insert([{
+            date: getChileTime().split('T')[0],
+            type: 'income',
+            category: 'VENTA',
+            description: `Servicio Técnico ${orderId} | ${customerName}`,
+            payment_method: method,
+            total_amount: total,
+            net_amount: neto,
+            tax_amount: tax,
+            doc_type: 'VOU',
+            doc_number: orderId.replace('OT-', ''),
+            is_ecommerce: false
+        }]);
+
+        if (error) console.error("Error caja:", error);
+        else toast.success(`💰 Ingreso de $${total.toLocaleString('es-CL')} registrado.`);
+    };
+
+    const handleStockDeduction = async (items) => {
+        if (!items || items.length === 0) return;
+        
+        console.log("Iniciando descuento de stock...");
+
+        const promises = items.map(item => 
+            supabase.rpc('update_inventory_stock', {
+                item_id: item.id,
+                quantity: item.quantity || 1,
+                warehouse_name: "Bodega Local"
+            })
+        );
+
+        try {
+            await Promise.all(promises);
+            toast.success("📦 Stock descontado de Bodega Local");
+        } catch (error) {
+            console.error("Error descontando stock:", error);
+            toast.error("Error al descontar inventario");
+        }
+    };
+
+    const handleEditOrder = (repair) => {
+        setEditingId(repair.id);
+        setEditingDbId(repair.db_id);
+        setActiveTab("order");
+        
+        const clientID = repair.customer_id;
+        const foundClient = clients.find(c => c.id === clientID);
+        const clientName = foundClient ? (foundClient.business_name || foundClient.full_name) : (repair.customer || "");
+        
+        setFormData({
+            status: repair.status || "En cola",
+            location: repair.location || "Local",
+            equipmentId: repair.equipment_id || "",
+            jobType: repair.job_type || "Reparación",
+            reportedFault: repair.reported_failure || "",
+            clientId: clientID || "",
+            technician: repair.technician_name || "",
+            internalNotes: repair.internal_notes || "",
+            startDate: repair.start_date ? repair.start_date.slice(0, 16) : "",
+            estimatedEndDate: repair.estimated_end_date ? repair.estimated_end_date.slice(0, 16) : "",
+            selectedItems: repair.items || [],
+            probReal: repair.prob_real || "", solReal: repair.sol_real || "", obs: repair.observations || "",
+            photoBefore: repair.photo_before || null, photoAfter: repair.photo_after || null,
+            receiverName: repair.receiver_name || "", receiverSignature: repair.receiver_signature || null,
+            paymentMethod: repair.payment_method || "Efectivo",
+            docType: repair.doc_type || "Boleta", docNumber: repair.doc_number || "", docUrl: repair.doc_url || "", docFile: null,
+            stockDeducted: repair.stock_deducted || false
+        });
+        
+        setEquipSearch(repair.device || repair.device_name || "");
+        setClientSearch(clientName);
+        setIsModalOpen(true);
+    };
+
+    const handleDeleteOrder = async (uuid, orderId) => {
+        if (window.confirm(`⚠️ ¿Eliminar orden ${orderId}?`)) {
+            const promise = deleteOrder(uuid);
+            toast.promise(promise, { loading: 'Eliminando...', success: 'Orden eliminada', error: 'Error al eliminar' });
+        }
+    };
+
+    const handleSaveOrder = async () => {
+        const missingFields = [];
+        if (!formData.clientId) missingFields.push("Cliente");
+        if (!formData.technician) missingFields.push("Técnico");
+        if (!formData.startDate) missingFields.push("Fecha Inicio");
+        if (!formData.equipmentId && (!equipSearch || equipSearch.trim() === "")) missingFields.push("Equipo");
+        if (formData.selectedItems.length === 0) missingFields.push("Al menos 1 Item");
+        if (!formData.reportedFault) missingFields.push("Falla Reportada");
+
+        if (missingFields.length > 0) {
+            toast.error("Faltan datos", { description: missingFields.join(", ") });
+            return;
+        }
+
+        let finalDocUrl = formData.docUrl;
+
+        // Upload Document Logic
+        if (formData.docFile) {
+            setUploadingDoc(true);
+            try {
+                const fileExt = formData.docFile.name.split('.').pop();
+                const fileName = `docs/${editingId || 'new'}_${Date.now()}.${fileExt}`;
+                const { error: uploadError } = await supabase.storage.from('repair-images').upload(fileName, formData.docFile);
+                if (uploadError) throw uploadError;
+                const { data: { publicUrl } } = supabase.storage.from('repair-images').getPublicUrl(fileName);
+                finalDocUrl = publicUrl;
+            } catch (error) {
+                console.error("Error subiendo documento:", error);
+                toast.error("Error al subir el documento PDF");
+                setUploadingDoc(false);
+                return;
+            }
+            setUploadingDoc(false);
+        }
+
+        const totalCost = formData.selectedItems.reduce((acc, item) => acc + (Number(item.price) * (item.quantity || 1)), 0);
+        const client = clients.find(c => c.id === formData.clientId);
+        const equipment = equipmentsList.find(e => e.id === Number(formData.equipmentId));
+        const customerName = client ? (client.business_name || client.full_name) : "Cliente Manual";
+
+        // Lógica de descuento de stock
+        let shouldDeductStock = false;
+        if (formData.status === "Finalizado y Pagado" && !formData.stockDeducted) {
+            shouldDeductStock = true;
+        }
+
+        const orderPayload = {
+            customer_id: formData.clientId || null,
+            customer_name: customerName,
+            equipment_id: formData.equipmentId || null,
+            device_name: equipment ? `${equipment.brand} ${equipment.model}` : (equipSearch || "Equipo Genérico"),
+            device_type: equipment ? equipment.type : "Otro",
+            status: formData.status,
+            location: formData.location,
+            job_type: formData.jobType,
+            reported_failure: formData.reportedFault,
+            internal_notes: formData.internalNotes,
+            technician_name: formData.technician,
+            start_date: formData.startDate,
+            estimated_end_date: formData.estimatedEndDate,
+            items: formData.selectedItems,
+            total_cost: totalCost,
+            payment_method: formData.paymentMethod,
+            prob_real: formData.probReal,
+            sol_real: formData.solReal,
+            observations: formData.obs,
+            photo_before: formData.photoBefore,
+            photo_after: formData.photoAfter,
+            receiver_name: formData.receiverName,
+            receiver_signature: formData.receiverSignature,
+            doc_type: formData.docType,
+            doc_number: formData.docNumber,
+            doc_url: finalDocUrl,
+            stock_deducted: shouldDeductStock ? true : formData.stockDeducted
+        };
+
+        const promise = (async () => {
+            if (editingDbId) {
+                await updateOrder(editingDbId, orderPayload);
+                
+                if (formData.status === "Finalizado y Pagado") {
+                    await registerCashFlowEntry(editingId, customerName, totalCost, formData.paymentMethod);
+                    if (shouldDeductStock) {
+                        await handleStockDeduction(formData.selectedItems);
+                    }
+                }
+            } else {
+                await createOrder(orderPayload);
+            }
+        })();
+
+        toast.promise(promise, { loading: 'Guardando...', success: () => { setIsModalOpen(false); resetForm(); return 'Guardado correctamente'; }, error: (err) => `Error: ${err.message}` });
+    };
+
+    const resetForm = () => {
+        setFormData({
+            status: "En cola", location: "Local", equipmentId: "", jobType: "Reparación", reportedFault: "", clientId: "", technician: "",
+            startDate: getChileTime().slice(0, 16), estimatedEndDate: "", internalNotes: "", selectedItems: [],
+            probReal: "", solReal: "", obs: "", photoBefore: null, photoAfter: null, receiverName: "", receiverSignature: null, paymentMethod: "Efectivo",
+            docType: "Boleta", docNumber: "", docUrl: "", docFile: null, stockDeducted: false
+        });
+        setEquipSearch(""); setClientSearch(""); setShowEquipOptions(false); setShowClientOptions(false);
+        setEditingId(null); setEditingDbId(null); setActiveTab("order"); setUploadingDoc(false);
+    };
+
+    const addItemToOrder = (item) => {
+        if (formData.selectedItems.some(i => i.id === item.id)) return;
+        setFormData({ ...formData, selectedItems: [...formData.selectedItems, { id: item.id, name: item.name, price: item.price_sell, quantity: 1 }] });
+    };
+
+    const removeItemFromOrder = (id) => {
+        setFormData({ ...formData, selectedItems: formData.selectedItems.filter(item => item.id !== id) });
+    };
+
+    const updateItemPrice = (id, newPrice) => {
+        setFormData({ ...formData, selectedItems: formData.selectedItems.map(item => item.id === id ? { ...item, price: parseFloat(newPrice) || 0 } : item) });
+    };
+
     return (
         <div className="space-y-6 animate-fadeIn pb-20">
-            {/* Header Limpio (Sin botones de Excel) */}
+            {/* Header */}
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                <div><h1 className="text-3xl font-black bg-clip-text text-transparent bg-brand-gradient italic uppercase tracking-tighter">Taller & Servicios</h1><p className="text-slate-400 font-medium">Gestión integral de órdenes de trabajo.</p></div>
+                <div>
+                    <h1 className="text-3xl font-black bg-clip-text text-transparent bg-brand-gradient italic uppercase tracking-tighter">Taller & Servicios</h1>
+                    <p className="text-slate-400 font-medium">Gestión integral de órdenes de trabajo.</p>
+                </div>
                 <div className="flex flex-wrap gap-2">
                     <button onClick={() => { resetForm(); setIsModalOpen(true); }} className="bg-brand-gradient hover:opacity-90 transition-all text-white px-6 py-2.5 rounded-xl font-bold flex items-center gap-2 shadow-lg shadow-brand-purple/20 hover:scale-105"><Plus size={20} /> Nueva Orden</button>
                 </div>
@@ -297,6 +431,7 @@ const Taller = () => {
                 </div>
             </div>
 
+            {/* Repairs Grid */}
             <div className="grid grid-cols-1 gap-4">
                 {filteredRepairs.map((repair) => (
                     <div key={repair.id} onClick={() => handleEditOrder(repair)} className="group bg-slate-900/50 backdrop-blur-md rounded-2xl border border-white/5 p-5 hover:border-brand-purple/30 transition-all hover:shadow-lg relative overflow-hidden cursor-pointer">
@@ -328,6 +463,7 @@ const Taller = () => {
             </div>
             {filteredRepairs.length === 0 && !loading && <div className="text-center py-20 text-slate-300 text-sm font-medium">No hay órdenes registradas.</div>}
 
+            {/* CREATE/EDIT MODAL */}
             {isModalOpen && (
                 <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-50 flex items-center justify-center p-4">
                     <div className="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-4xl shadow-2xl overflow-hidden flex flex-col max-h-[95vh] animate-in fade-in zoom-in duration-200">
@@ -345,6 +481,7 @@ const Taller = () => {
                                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                                     <div className="lg:col-span-1 space-y-6">
                                         <div className="space-y-4 bg-slate-950/50 p-4 rounded-xl border border-white/5">
+                                            {/* ... (Secciones de cliente y tecnico sin cambios) ... */}
                                             <div>
                                                 <label className="text-[10px] uppercase font-bold text-slate-500 mb-2 block">Modalidad</label>
                                                 <div className="grid grid-cols-2 gap-2">
@@ -363,7 +500,7 @@ const Taller = () => {
                                             <div>
                                                 <label className="text-[10px] uppercase font-bold text-slate-500 mb-2 block">Cliente **</label>
                                                 <div className="relative">
-                                                    <input type="text" className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-white text-sm focus:border-brand-purple outline-none" placeholder="Buscar cliente..." value={clientSearch} onChange={(e) => { setClientSearch(e.target.value); setShowClientOptions(true); if(e.target.value === "") setFormData({...formData, clientId: ""}); }} onFocus={() => setShowClientOptions(true)} />
+                                                    <input type="text" className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-white text-sm focus:border-brand-purple outline-none" placeholder="Buscar cliente..." value={clientSearch} onChange={(e) => { setClientSearch(e.target.value); setShowClientOptions(true); if (e.target.value === "") setFormData({ ...formData, clientId: "" }); }} onFocus={() => setShowClientOptions(true)} />
                                                     {showClientOptions && clientSearch && (
                                                         <div className="absolute top-full left-0 right-0 mt-2 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl max-h-60 overflow-y-auto z-50">
                                                             {filteredClients.length > 0 ? filteredClients.map(c => (
@@ -372,7 +509,7 @@ const Taller = () => {
                                                                     <span className="text-xs text-slate-500">{c.rut}</span>
                                                                 </div>
                                                             )) : (
-                                                                <div className="p-3 text-xs text-slate-500 text-center">No encontrado. <br/>¿Es nuevo? Agrégalo en Clientes.</div>
+                                                                <div className="p-3 text-xs text-slate-500 text-center">No encontrado. <br />¿Es nuevo? Agrégalo en Clientes.</div>
                                                             )}
                                                         </div>
                                                     )}
@@ -393,7 +530,7 @@ const Taller = () => {
                                                     </div>
                                                     <div className="bg-slate-900 border border-white/10 rounded-xl p-3 flex flex-col gap-1 hover:border-brand-cyan/50 transition-all group relative">
                                                         <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest group-hover:text-brand-cyan transition-colors">Término (Est.)</label>
-                                                        <div className="flex items-center gap-2"><input type="datetime-local" className="bg-transparent text-white text-xs font-mono outline-none w-full uppercase" style={{ colorScheme: "dark" }} value={formData.estimatedEndDate} onChange={(e) => setFormData({...formData, estimatedEndDate: e.target.value})} /></div>
+                                                        <div className="flex items-center gap-2"><input type="datetime-local" className="bg-transparent text-white text-xs font-mono outline-none w-full uppercase" style={{ colorScheme: "dark" }} value={formData.estimatedEndDate} onChange={(e) => setFormData({ ...formData, estimatedEndDate: e.target.value })} /></div>
                                                     </div>
                                                 </div>
                                             </div>
@@ -401,103 +538,153 @@ const Taller = () => {
                                     </div>
 
                                     <div className="lg:col-span-1 space-y-6">
-                                            <div className="bg-slate-950/50 p-4 rounded-xl border border-white/5 h-full flex flex-col">
-                                                
-                                                <label className="text-[10px] uppercase font-bold text-slate-500 mb-2 block">Equipo</label>
-                                                <div className="relative mb-4">
-                                                    <input type="text" className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-white text-sm focus:border-brand-purple outline-none" placeholder="Buscar marca o modelo..." value={equipSearch} onChange={(e) => { setEquipSearch(e.target.value); setShowEquipOptions(true); }} onFocus={() => setShowEquipOptions(true)} />
-                                                    {showEquipOptions && equipSearch && (
-                                                        <div className="absolute top-full left-0 right-0 mt-2 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl max-h-60 overflow-y-auto z-20">
-                                                            {filteredEquips.map(eq => (
-                                                                <div key={eq.id} onClick={() => { setFormData({ ...formData, equipmentId: eq.id }); setEquipSearch(`${eq.brand} ${eq.model}`); setShowEquipOptions(false); }} className="p-3 hover:bg-white/5 cursor-pointer border-b border-white/5 text-sm text-white">
-                                                                    {eq.brand} {eq.model}
-                                                                </div>
-                                                            ))}
-                                                        </div>
-                                                    )}
-                                                </div>
-                                                
-                                                <label className="text-[10px] uppercase font-bold text-slate-500 mb-2 block">Falla Reportada</label>
-                                                <textarea className="w-full h-24 bg-slate-900 border border-slate-700 rounded-lg p-3 text-white resize-none text-sm mb-4" value={formData.reportedFault} onChange={(e) => setFormData({ ...formData, reportedFault: e.target.value })}></textarea>
+                                        <div className="bg-slate-950/50 p-4 rounded-xl border border-white/5 h-full flex flex-col">
 
-                                                <div className="mt-2">
-                                                    <label className="text-[10px] uppercase font-bold text-amber-500 mb-2 block flex items-center gap-2"><Lock size={12} /> Notas Internas (Privado)</label>
-                                                    <textarea className="w-full h-24 bg-slate-900 border border-amber-500/30 rounded-lg p-3 text-white resize-none text-sm focus:border-amber-500 transition-colors" placeholder="Apuntes visibles solo para técnicos..." value={formData.internalNotes} onChange={(e) => setFormData({ ...formData, internalNotes: e.target.value })}></textarea>
-                                                </div>
-
-                                                {/* SECCION DOCUMENTOS FISCALES */}
-                                                {showFiscalFields && (
-                                                    <div className="mt-4 border-t border-white/10 pt-4 animate-in fade-in slide-in-from-top-2">
-                                                        <label className="text-[10px] uppercase font-bold text-emerald-500 mb-2 block flex items-center gap-2">
-                                                            <Receipt size={12} /> Documento Fiscal / Cierre
-                                                        </label>
-                                                        <div className="space-y-3">
-                                                            <div className="grid grid-cols-2 gap-2">
-                                                                <select 
-                                                                    className="bg-slate-900 border border-slate-700 rounded-lg p-2 text-white text-xs"
-                                                                    value={formData.docType}
-                                                                    onChange={(e) => setFormData({...formData, docType: e.target.value})}
-                                                                >
-                                                                    {DOC_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                                                                </select>
-                                                                <input 
-                                                                    type="text" 
-                                                                    placeholder="N° Folio/Doc" 
-                                                                    className="bg-slate-900 border border-slate-700 rounded-lg p-2 text-white text-xs"
-                                                                    value={formData.docNumber}
-                                                                    onChange={(e) => setFormData({...formData, docNumber: e.target.value})}
-                                                                />
+                                            <label className="text-[10px] uppercase font-bold text-slate-500 mb-2 block">Equipo</label>
+                                            <div className="relative mb-4">
+                                                <input type="text" className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-white text-sm focus:border-brand-purple outline-none" placeholder="Buscar marca o modelo..." value={equipSearch} onChange={(e) => { setEquipSearch(e.target.value); setShowEquipOptions(true); }} onFocus={() => setShowEquipOptions(true)} />
+                                                {showEquipOptions && equipSearch && (
+                                                    <div className="absolute top-full left-0 right-0 mt-2 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl max-h-60 overflow-y-auto z-20">
+                                                        {filteredEquips.map(eq => (
+                                                            <div key={eq.id} onClick={() => { setFormData({ ...formData, equipmentId: eq.id }); setEquipSearch(`${eq.brand} ${eq.model}`); setShowEquipOptions(false); }} className="p-3 hover:bg-white/5 cursor-pointer border-b border-white/5 text-sm text-white">
+                                                                {eq.brand} {eq.model}
                                                             </div>
-                                                            
-                                                            <div className="relative">
-                                                                <input 
-                                                                    type="file" 
-                                                                    accept="application/pdf"
-                                                                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                                                                    onChange={(e) => setFormData({...formData, docFile: e.target.files[0]})}
-                                                                />
-                                                                <div className={`border border-dashed ${formData.docFile || formData.docUrl ? 'border-emerald-500 bg-emerald-500/10' : 'border-slate-700 bg-slate-900'} rounded-lg p-3 flex items-center justify-center gap-2 transition-all`}>
-                                                                    {uploadingDoc ? <div className="animate-spin text-emerald-500"><Clock size={16}/></div> : <UploadCloud size={16} className={formData.docFile ? "text-emerald-500" : "text-slate-500"} />}
-                                                                    <span className="text-xs text-slate-400">
-                                                                        {formData.docFile ? formData.docFile.name : (formData.docUrl ? "Documento Cargado (Click para cambiar)" : "Subir PDF del Documento")}
-                                                                    </span>
-                                                                </div>
-                                                            </div>
-                                                            
-                                                            {formData.docUrl && !formData.docFile && (
-                                                                <a href={formData.docUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-emerald-400 hover:underline flex items-center gap-1">
-                                                                    <FileCheck size={10} /> Ver documento actual
-                                                                </a>
-                                                            )}
-                                                        </div>
+                                                        ))}
                                                     </div>
                                                 )}
                                             </div>
-                                    </div>
 
-                                    <div className="lg:col-span-1 space-y-6">
-                                            <div className="bg-slate-950/50 rounded-xl border border-white/5 h-full flex flex-col p-4">
-                                                <label className="text-[10px] uppercase font-bold text-slate-500 mb-2 block">Repuestos / Servicios</label>
-                                                <div className="flex gap-2 mb-2">
-                                                    <select id="itemSelect" className="flex-1 bg-slate-900 border border-slate-700 rounded-lg p-2 text-white text-xs">
-                                                        <option value="">Agregar item...</option>
-                                                        {compatibleItems.map(item => (<option key={item.id} value={item.id}>{item.name} (${Number(item.price_sell).toLocaleString('es-CL')})</option>))}
-                                                    </select>
-                                                    <button onClick={() => { const sel = document.getElementById('itemSelect'); const item = inventoryItems.find(i => String(i.id) === sel.value); if(item) addItemToOrder(item); }} className="bg-brand-purple p-2 rounded-lg text-white"><Plus size={16} /></button>
-                                                </div>
-                                                <div className="flex-1 overflow-y-auto space-y-2 custom-scrollbar max-h-[200px]">
-                                                    {formData.selectedItems.map((item) => (
-                                                        <div key={item.id} className="bg-slate-800/50 p-2 rounded flex justify-between items-center text-xs text-white">
-                                                            <span className="flex-1 mr-2">{item.name}</span>
-                                                            <div className="flex items-center gap-2">
-                                                                <div className="flex items-center bg-slate-900 border border-slate-700 rounded px-1"><span className="text-slate-500 mr-1">$</span><input type="number" value={item.price} onChange={(e) => updateItemPrice(item.id, e.target.value)} className="w-16 bg-transparent text-right outline-none text-brand-cyan font-mono" /></div>
-                                                                <button onClick={() => removeItemFromOrder(item.id)} className="text-red-400 hover:text-red-300"><Trash2 size={14} /></button>
+                                            <label className="text-[10px] uppercase font-bold text-slate-500 mb-2 block">Falla Reportada</label>
+                                            <textarea className="w-full h-24 bg-slate-900 border border-slate-700 rounded-lg p-3 text-white resize-none text-sm mb-4" value={formData.reportedFault} onChange={(e) => setFormData({ ...formData, reportedFault: e.target.value })}></textarea>
+
+                                            <div className="mt-2">
+                                                <label className="text-[10px] uppercase font-bold text-amber-500 mb-2 block flex items-center gap-2"><Lock size={12} /> Notas Internas (Privado)</label>
+                                                <textarea className="w-full h-24 bg-slate-900 border border-amber-500/30 rounded-lg p-3 text-white resize-none text-sm focus:border-amber-500 transition-colors" placeholder="Apuntes visibles solo para técnicos..." value={formData.internalNotes} onChange={(e) => setFormData({ ...formData, internalNotes: e.target.value })}></textarea>
+                                            </div>
+
+                                            {showFiscalFields && (
+                                                <div className="mt-4 border-t border-white/10 pt-4 animate-in fade-in slide-in-from-top-2">
+                                                    <label className="text-[10px] uppercase font-bold text-emerald-500 mb-2 block flex items-center gap-2">
+                                                        <Receipt size={12} /> Documento Fiscal / Cierre
+                                                    </label>
+                                                    <div className="space-y-3">
+                                                        <div className="grid grid-cols-2 gap-2">
+                                                            <select className="bg-slate-900 border border-slate-700 rounded-lg p-2 text-white text-xs" value={formData.docType} onChange={(e) => setFormData({ ...formData, docType: e.target.value })}>{DOC_TYPES.map(t => <option key={t} value={t}>{t}</option>)}</select>
+                                                            <input type="text" placeholder="N° Folio/Doc" className="bg-slate-900 border border-slate-700 rounded-lg p-2 text-white text-xs" value={formData.docNumber} onChange={(e) => setFormData({ ...formData, docNumber: e.target.value })} />
+                                                        </div>
+                                                        <div className="relative">
+                                                            <input type="file" accept="application/pdf" className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" onChange={(e) => setFormData({ ...formData, docFile: e.target.files[0] })} />
+                                                            <div className={`border border-dashed ${formData.docFile || formData.docUrl ? 'border-emerald-500 bg-emerald-500/10' : 'border-slate-700 bg-slate-900'} rounded-lg p-3 flex items-center justify-center gap-2 transition-all`}>
+                                                                {uploadingDoc ? <div className="animate-spin text-emerald-500"><Clock size={16} /></div> : <UploadCloud size={16} className={formData.docFile ? "text-emerald-500" : "text-slate-500"} />}
+                                                                <span className="text-xs text-slate-400">{formData.docFile ? formData.docFile.name : (formData.docUrl ? "Documento Cargado (Click para cambiar)" : "Subir PDF del Documento")}</span>
                                                             </div>
                                                         </div>
-                                                    ))}
+                                                        {formData.docUrl && !formData.docFile && (<a href={formData.docUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-emerald-400 hover:underline flex items-center gap-1"><FileCheck size={10} /> Ver documento actual</a>)}
+                                                    </div>
                                                 </div>
-                                                <div className="mt-4 pt-4 border-t border-white/10 flex justify-between text-white font-bold"><span>Total</span><span className="text-brand-cyan">${formData.selectedItems.reduce((acc, i) => acc + i.price, 0).toLocaleString('es-CL')}</span></div>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    {/* 🔥 SECCIÓN MEJORADA DE REPUESTOS (UX FIX + LOGICA) 🔥 */}
+                                    <div className="lg:col-span-1 space-y-6">
+                                        <div className="bg-slate-950/50 rounded-xl border border-white/5 h-full flex flex-col p-4">
+                                            <label className="text-[10px] uppercase font-bold text-slate-500 mb-2 block">Repuestos / Servicios</label>
+                                            
+                                            {/* Mensaje de estado */}
+                                            {formData.equipmentId && compatibleItems.length === 0 && (
+                                                <p className="text-xs text-amber-500 mb-2 font-bold bg-amber-500/10 p-2 rounded border border-amber-500/20">
+                                                    ⚠️ No hay items asignados a este modelo.
+                                                </p>
+                                            )}
+
+                                            <div className="flex items-center gap-2 mb-3">
+                                                {/* Contenedor del Select con min-w-0 para evitar desbordes y TRUNCATE */}
+                                                <div className="relative flex-1 min-w-0">
+                                                    <select 
+                                                        id="itemSelect" 
+                                                        className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white text-xs outline-none focus:border-brand-purple transition-all truncate pr-8 appearance-none"
+                                                        style={{ backgroundImage: 'none' }}
+                                                    >
+                                                        <option value="">
+                                                            {formData.equipmentId ? "Seleccionar item..." : "Primero selecciona un equipo"}
+                                                        </option>
+                                                        {compatibleItems.map(item => {
+                                                            // Cortar nombres largos para el select
+                                                            const name = item.name.length > 35 ? item.name.substring(0, 35) + '...' : item.name;
+                                                            return (
+                                                                <option key={item.id} value={item.id}>
+                                                                    {name} — ${Number(item.price_sell).toLocaleString('es-CL')}
+                                                                </option>
+                                                            );
+                                                        })}
+                                                    </select>
+                                                    {/* Flecha personalizada */}
+                                                    <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-500">
+                                                        <svg width="10" height="6" viewBox="0 0 10 6" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                                                    </div>
+                                                </div>
+
+                                                {/* Botón con shrink-0 para que nunca se oculte */}
+                                                <button 
+                                                    onClick={() => { 
+                                                        const sel = document.getElementById('itemSelect'); 
+                                                        const item = inventoryItems.find(i => String(i.id) === sel.value); 
+                                                        if (item) addItemToOrder(item); 
+                                                    }} 
+                                                    className="bg-brand-purple hover:bg-brand-purple/80 text-white w-10 h-10 rounded-xl flex items-center justify-center shrink-0 shadow-lg shadow-brand-purple/20 transition-all active:scale-95"
+                                                    title="Agregar a la lista"
+                                                >
+                                                    <Plus size={20} strokeWidth={3} />
+                                                </button>
                                             </div>
+
+                                            <div className="flex-1 overflow-y-auto space-y-2 custom-scrollbar max-h-[200px] pr-1">
+                                                {formData.selectedItems.map((item) => (
+                                                    <div key={item.id} className="bg-slate-800/50 p-2.5 rounded-lg border border-white/5 flex justify-between items-center text-xs text-white group hover:bg-slate-800 transition-all">
+                                                        <span className="flex-1 mr-2 font-medium line-clamp-1" title={item.name}>{item.name}</span>
+                                                        <div className="flex items-center gap-2">
+                                                            <div className="flex items-center bg-slate-900 border border-slate-700 rounded-lg px-2 py-1">
+                                                                <span className="text-slate-500 mr-1">$</span>
+                                                                <input 
+                                                                    type="number" 
+                                                                    value={item.price} 
+                                                                    onChange={(e) => updateItemPrice(item.id, e.target.value)} 
+                                                                    className="w-16 bg-transparent text-right outline-none text-brand-cyan font-mono font-bold" 
+                                                                />
+                                                            </div>
+                                                            <button 
+                                                                onClick={() => removeItemFromOrder(item.id)} 
+                                                                className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-400/10 transition-all"
+                                                            >
+                                                                <Trash2 size={14} />
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                                {formData.selectedItems.length === 0 && (
+                                                    <div className="text-center py-8 text-slate-600 text-[10px] italic border-2 border-dashed border-white/5 rounded-xl">
+                                                        Sin items agregados
+                                                    </div>
+                                                )}
+                                            </div>
+                                            
+                                            {/* Indicador Visual de Stock */}
+                                            {formData.stockDeducted && (
+                                                <div className="mt-2 text-center">
+                                                    <span className="text-[10px] text-emerald-500 bg-emerald-500/10 border border-emerald-500/20 px-2 py-1 rounded-full flex items-center justify-center gap-1 font-bold">
+                                                        <BoxSelect size={12} /> Stock descontado
+                                                    </span>
+                                                </div>
+                                            )}
+
+                                            <div className="mt-4 pt-4 border-t border-white/10 flex justify-between items-end">
+                                                <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Total Estimado</span>
+                                                <span className="text-xl font-black text-brand-cyan tracking-tighter">
+                                                    ${formData.selectedItems.reduce((acc, i) => acc + i.price, 0).toLocaleString('es-CL')}
+                                                </span>
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             )}
@@ -520,12 +707,12 @@ const Taller = () => {
                     </div>
                 </div>
             )}
-            
+
             {showScheduler && (
                 <div className="fixed inset-0 bg-slate-950/95 backdrop-blur-md z-[60] flex items-center justify-center p-4">
                     <div className="bg-slate-900 border border-white/10 rounded-2xl w-full max-w-6xl h-[85vh] shadow-2xl flex flex-col animate-in fade-in zoom-in duration-200">
                         <div className="p-4 border-b border-white/10 flex justify-between items-center bg-slate-800/50"><h3 className="text-xl font-bold text-white flex items-center gap-2"><Calendar className="text-brand-purple" size={24} /> Disponibilidad</h3><button onClick={() => setShowScheduler(false)} className="text-slate-400 hover:text-white"><X size={24} /></button></div>
-                        <div className="flex-1 overflow-auto p-6"><div className="grid grid-cols-5 gap-4"><div className="text-center text-xs text-slate-500 font-bold">HORA</div>{technicians.map(t => <div key={t} className="text-center text-xs text-white font-bold">{t}</div>)}{Array.from({length: 9}, (_, i) => i + 9).map(h => (<><div key={`h-${h}`} className="text-center text-slate-500 text-xs py-2 border-t border-white/5">{h}:00</div>{technicians.map(t => (<div key={`${t}-${h}`} className="border-t border-white/5 py-2"><button onClick={() => { setFormData({...formData, technician: t, startDate: `${schedulerDate}T${h.toString().padStart(2,'0')}:00`}); setShowScheduler(false); }} className="w-full h-full bg-emerald-500/5 hover:bg-emerald-500/20 text-emerald-500 text-[10px] rounded opacity-0 hover:opacity-100 transition-all">+ Asignar</button></div>))}</>))}</div></div>
+                        <div className="flex-1 overflow-auto p-6"><div className="grid grid-cols-5 gap-4"><div className="text-center text-xs text-slate-500 font-bold">HORA</div>{technicians.map(t => <div key={t} className="text-center text-xs text-white font-bold">{t}</div>)}{Array.from({ length: 9 }, (_, i) => i + 9).map(h => (<><div key={`h-${h}`} className="text-center text-slate-500 text-xs py-2 border-t border-white/5">{h}:00</div>{technicians.map(t => (<div key={`${t}-${h}`} className="border-t border-white/5 py-2"><button onClick={() => { setFormData({ ...formData, technician: t, startDate: `${schedulerDate}T${h.toString().padStart(2, '0')}:00` }); setShowScheduler(false); }} className="w-full h-full bg-emerald-500/5 hover:bg-emerald-500/20 text-emerald-500 text-[10px] rounded opacity-0 hover:opacity-100 transition-all">+ Asignar</button></div>))}</>))}</div></div>
                     </div>
                 </div>
             )}
