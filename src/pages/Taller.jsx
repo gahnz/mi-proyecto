@@ -4,17 +4,17 @@ import {
     Smartphone, Laptop, Tablet, User, Calendar, DollarSign,
     MapPin, Clock, FileText, PenTool, X, Trash2,
     Save, Monitor, Printer, Cpu, Lock, Share2,
-    Receipt, UploadCloud, FileCheck
+    Receipt, UploadCloud, FileCheck, BoxSelect // 👈 Icono nuevo
 } from "lucide-react";
 import { supabase } from "../supabase/client";
-import { toast } from "sonner";
+import { toast } from "sonner"; 
 
 import { useWorkOrders } from "../hooks/useWorkOrders";
 import { useCustomers } from "../hooks/useCustomers";
 import { useEquipos } from "../hooks/useEquipos";
 import { useInventory } from "../hooks/useInventory";
-import { generateOrderPDF } from "../utils/pdfGenerator";
-import { getChileTime } from "../utils/time";
+import { generateOrderPDF } from "../utils/pdfGenerator"; 
+import { getChileTime } from "../utils/time"; 
 
 const JOB_TYPES = ["Mantenimiento", "Reparación", "Revisión", "Configuración"];
 const STATUS_LIST = [
@@ -34,7 +34,7 @@ const Taller = () => {
     // Local State
     const [technicians, setTechnicians] = useState([]);
     const [filterStatus, setFilterStatus] = useState("Todos");
-    const [filterLocation, setFilterLocation] = useState("Todos"); // Kept for future use, though currently unused in UI
+    const [filterLocation, setFilterLocation] = useState("Todos");
     const [filterTech, setFilterTech] = useState("Todos");
     const [searchTerm, setSearchTerm] = useState("");
 
@@ -66,21 +66,14 @@ const Taller = () => {
         estimatedEndDate: "",
         internalNotes: "",
         selectedItems: [],
-        probReal: "",
-        solReal: "",
-        obs: "",
-        photoBefore: null,
-        photoAfter: null,
-        receiverName: "",
-        receiverSignature: null,
+        probReal: "", solReal: "", obs: "",
+        photoBefore: null, photoAfter: null,
+        receiverName: "", receiverSignature: null,
         paymentMethod: "Efectivo",
-        docType: "Boleta",
-        docNumber: "",
-        docUrl: "",
-        docFile: null
+        docType: "Boleta", docNumber: "", docUrl: "", docFile: null,
+        stockDeducted: false // 👈 Control interno
     });
 
-    // Fetch Technicians
     useEffect(() => {
         const fetchTechnicians = async () => {
             const { data } = await supabase
@@ -141,13 +134,9 @@ const Taller = () => {
             else matchesStatus = repair.status === filterStatus;
         }
         
-        // Use filterLocation if implemented in UI, currently defaulting to true as "Todos" is initial state
         const matchesLocation = filterLocation === "Todos" || (repair.location || "Local") === filterLocation; 
-        
         const matchesTech = filterTech === "Todos" || (repair.technician || "").includes(filterTech);
-        
         const searchableString = `${repair.customer || ""} ${repair.id || ""} ${repair.device || ""} ${repair.status || ""}`;
-        // Simple includes check if smartSearch feels too heavy for general search, but smartSearch is better
         const matchesSearch = searchTerm === "" || smartSearch(searchableString, searchTerm);
 
         return matchesStatus && matchesSearch && matchesLocation && matchesTech;
@@ -171,14 +160,7 @@ const Taller = () => {
 
     const registerCashFlowEntry = async (orderId, customerName, total, method) => {
         if (!orderId) return;
-        
-        // Prevent duplicate entries
-        const { data: existing } = await supabase
-            .from('cash_flow')
-            .select('id')
-            .ilike('description', `%${orderId}%`)
-            .limit(1);
-            
+        const { data: existing } = await supabase.from('cash_flow').select('id').ilike('description', `%${orderId}%`).limit(1);
         if (existing && existing.length > 0) return;
 
         const neto = Math.round(total / 1.19);
@@ -202,6 +184,28 @@ const Taller = () => {
         else toast.success(`💰 Ingreso de $${total.toLocaleString('es-CL')} registrado.`);
     };
 
+    const handleStockDeduction = async (items) => {
+        if (!items || items.length === 0) return;
+        
+        console.log("Iniciando descuento de stock...");
+
+        const promises = items.map(item => 
+            supabase.rpc('update_inventory_stock', {
+                item_id: item.id,
+                quantity: item.quantity || 1,
+                warehouse_name: "Bodega Local" // 👈 Debe coincidir con la llave en tu JSON
+            })
+        );
+
+        try {
+            await Promise.all(promises);
+            toast.success("📦 Stock descontado de Bodega Local");
+        } catch (error) {
+            console.error("Error descontando stock:", error);
+            toast.error("Error al descontar inventario");
+        }
+    };
+
     const handleEditOrder = (repair) => {
         setEditingId(repair.id);
         setEditingDbId(repair.db_id);
@@ -223,18 +227,12 @@ const Taller = () => {
             startDate: repair.start_date ? repair.start_date.slice(0, 16) : "",
             estimatedEndDate: repair.estimated_end_date ? repair.estimated_end_date.slice(0, 16) : "",
             selectedItems: repair.items || [],
-            probReal: repair.prob_real || "",
-            solReal: repair.sol_real || "",
-            obs: repair.observations || "",
-            photoBefore: repair.photo_before || null,
-            photoAfter: repair.photo_after || null,
-            receiverName: repair.receiver_name || "",
-            receiverSignature: repair.receiver_signature || null,
+            probReal: repair.prob_real || "", solReal: repair.sol_real || "", obs: repair.observations || "",
+            photoBefore: repair.photo_before || null, photoAfter: repair.photo_after || null,
+            receiverName: repair.receiver_name || "", receiverSignature: repair.receiver_signature || null,
             paymentMethod: repair.payment_method || "Efectivo",
-            docType: repair.doc_type || "Boleta",
-            docNumber: repair.doc_number || "",
-            docUrl: repair.doc_url || "",
-            docFile: null
+            docType: repair.doc_type || "Boleta", docNumber: repair.doc_number || "", docUrl: repair.doc_url || "", docFile: null,
+            stockDeducted: repair.stock_deducted || false // 👈 Cargamos estado de stock
         });
         
         setEquipSearch(repair.device || repair.device_name || "");
@@ -254,7 +252,6 @@ const Taller = () => {
         if (!formData.clientId) missingFields.push("Cliente");
         if (!formData.technician) missingFields.push("Técnico");
         if (!formData.startDate) missingFields.push("Fecha Inicio");
-        // if (!formData.estimatedEndDate) missingFields.push("Fecha Término (Est.)"); // Optional depending on workflow
         if (!formData.equipmentId && (!equipSearch || equipSearch.trim() === "")) missingFields.push("Equipo");
         if (formData.selectedItems.length === 0) missingFields.push("Al menos 1 Item");
         if (!formData.reportedFault) missingFields.push("Falla Reportada");
@@ -273,9 +270,7 @@ const Taller = () => {
                 const fileExt = formData.docFile.name.split('.').pop();
                 const fileName = `docs/${editingId || 'new'}_${Date.now()}.${fileExt}`;
                 const { error: uploadError } = await supabase.storage.from('repair-images').upload(fileName, formData.docFile);
-
                 if (uploadError) throw uploadError;
-
                 const { data: { publicUrl } } = supabase.storage.from('repair-images').getPublicUrl(fileName);
                 finalDocUrl = publicUrl;
             } catch (error) {
@@ -291,6 +286,13 @@ const Taller = () => {
         const client = clients.find(c => c.id === formData.clientId);
         const equipment = equipmentsList.find(e => e.id === Number(formData.equipmentId));
         const customerName = client ? (client.business_name || client.full_name) : "Cliente Manual";
+
+        // 🔥 LÓGICA DE DESCUENTO DE STOCK
+        let shouldDeductStock = false;
+        // Si pasamos a "Finalizado y Pagado" y AUN NO se ha descontado
+        if (formData.status === "Finalizado y Pagado" && !formData.stockDeducted) {
+            shouldDeductStock = true;
+        }
 
         const orderPayload = {
             customer_id: formData.clientId || null,
@@ -318,14 +320,21 @@ const Taller = () => {
             receiver_signature: formData.receiverSignature,
             doc_type: formData.docType,
             doc_number: formData.docNumber,
-            doc_url: finalDocUrl
+            doc_url: finalDocUrl,
+            stock_deducted: shouldDeductStock ? true : formData.stockDeducted // Marcamos como descontado
         };
 
         const promise = (async () => {
             if (editingDbId) {
                 await updateOrder(editingDbId, orderPayload);
+                
+                // Ejecutamos acciones de cierre
                 if (formData.status === "Finalizado y Pagado") {
                     await registerCashFlowEntry(editingId, customerName, totalCost, formData.paymentMethod);
+                    
+                    if (shouldDeductStock) {
+                        await handleStockDeduction(formData.selectedItems);
+                    }
                 }
             } else {
                 await createOrder(orderPayload);
@@ -337,42 +346,18 @@ const Taller = () => {
 
     const resetForm = () => {
         setFormData({
-            status: "En cola",
-            location: "Local",
-            equipmentId: "",
-            jobType: "Reparación",
-            reportedFault: "",
-            clientId: "",
-            technician: "",
-            startDate: getChileTime().slice(0, 16),
-            estimatedEndDate: "",
-            internalNotes: "",
-            selectedItems: [],
-            probReal: "",
-            solReal: "",
-            obs: "",
-            photoBefore: null,
-            photoAfter: null,
-            receiverName: "",
-            receiverSignature: null,
-            paymentMethod: "Efectivo",
-            docType: "Boleta",
-            docNumber: "",
-            docUrl: "",
-            docFile: null
+            status: "En cola", location: "Local", equipmentId: "", jobType: "Reparación", reportedFault: "", clientId: "", technician: "",
+            startDate: getChileTime().slice(0, 16), estimatedEndDate: "", internalNotes: "", selectedItems: [],
+            probReal: "", solReal: "", obs: "", photoBefore: null, photoAfter: null, receiverName: "", receiverSignature: null, paymentMethod: "Efectivo",
+            docType: "Boleta", docNumber: "", docUrl: "", docFile: null, stockDeducted: false
         });
-        setEquipSearch("");
-        setClientSearch("");
-        setShowEquipOptions(false);
-        setShowClientOptions(false);
-        setEditingId(null);
-        setEditingDbId(null);
-        setActiveTab("order");
-        setUploadingDoc(false);
+        setEquipSearch(""); setClientSearch(""); setShowEquipOptions(false); setShowClientOptions(false);
+        setEditingId(null); setEditingDbId(null); setActiveTab("order"); setUploadingDoc(false);
     };
 
     const addItemToOrder = (item) => {
         if (formData.selectedItems.some(i => i.id === item.id)) return;
+        // Aseguramos que quantity sea 1 por defecto
         setFormData({ ...formData, selectedItems: [...formData.selectedItems, { id: item.id, name: item.name, price: item.price_sell, quantity: 1 }] });
     };
 
@@ -468,6 +453,7 @@ const Taller = () => {
                                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                                     <div className="lg:col-span-1 space-y-6">
                                         <div className="space-y-4 bg-slate-950/50 p-4 rounded-xl border border-white/5">
+                                            {/* ... (Secciones de cliente y tecnico sin cambios) ... */}
                                             <div>
                                                 <label className="text-[10px] uppercase font-bold text-slate-500 mb-2 block">Modalidad</label>
                                                 <div className="grid grid-cols-2 gap-2">
@@ -501,7 +487,7 @@ const Taller = () => {
                                                     )}
                                                 </div>
                                             </div>
-
+                                            
                                             <div>
                                                 <label className="text-[10px] uppercase font-bold text-slate-500 mb-2 block">Técnico **</label>
                                                 <select className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-white" value={formData.technician} onChange={(e) => setFormData({ ...formData, technician: e.target.value })}><option value="">Seleccionar...</option>{technicians.map(t => <option key={t} value={t}>{t}</option>)}</select>
@@ -512,7 +498,7 @@ const Taller = () => {
                                                 <div className="grid grid-cols-2 gap-4">
                                                     <div className="bg-slate-900 border border-white/10 rounded-xl p-3 flex flex-col gap-1 hover:border-brand-purple/50 transition-all group relative">
                                                         <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest group-hover:text-brand-purple transition-colors">Fecha Inicio</label>
-                                                        <div className="flex items-center gap-2"><input type="datetime-local" className="bg-transparent text-white text-xs font-mono outline-none w-full uppercase" style={{ colorScheme: "dark" }} value={formData.startDate} onChange={(e) => setFormData({ ...formData, startDate: e.target.value })} /></div>
+                                                        <div className="flex items-center gap-2"><input type="datetime-local" className="bg-transparent text-white text-xs font-mono outline-none w-full uppercase" style={{ colorScheme: "dark" }} value={formData.startDate} onChange={(e) => setFormData({...formData, startDate: e.target.value})} /></div>
                                                     </div>
                                                     <div className="bg-slate-900 border border-white/10 rounded-xl p-3 flex flex-col gap-1 hover:border-brand-cyan/50 transition-all group relative">
                                                         <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest group-hover:text-brand-cyan transition-colors">Término (Est.)</label>
@@ -544,14 +530,14 @@ const Taller = () => {
                                             <textarea className="w-full h-24 bg-slate-900 border border-slate-700 rounded-lg p-3 text-white resize-none text-sm mb-4" value={formData.reportedFault} onChange={(e) => setFormData({ ...formData, reportedFault: e.target.value })}></textarea>
 
                                             <div className="mt-2">
-                                                <label className="text-[10px] uppercase font-bold text-amber-500 mb-2 flex items-center gap-2"><Lock size={12} /> Notas Internas (Privado)</label>
+                                                <label className="text-[10px] uppercase font-bold text-amber-500 mb-2 block flex items-center gap-2"><Lock size={12} /> Notas Internas (Privado)</label>
                                                 <textarea className="w-full h-24 bg-slate-900 border border-amber-500/30 rounded-lg p-3 text-white resize-none text-sm focus:border-amber-500 transition-colors" placeholder="Apuntes visibles solo para técnicos..." value={formData.internalNotes} onChange={(e) => setFormData({ ...formData, internalNotes: e.target.value })}></textarea>
                                             </div>
 
                                             {/* SECCION DOCUMENTOS FISCALES */}
                                             {showFiscalFields && (
                                                 <div className="mt-4 border-t border-white/10 pt-4 animate-in fade-in slide-in-from-top-2">
-                                                    <label className="text-[10px] uppercase font-bold text-emerald-500 mb-2 flex items-center gap-2">
+                                                    <label className="text-[10px] uppercase font-bold text-emerald-500 mb-2 block flex items-center gap-2">
                                                         <Receipt size={12} /> Documento Fiscal / Cierre
                                                     </label>
                                                     <div className="space-y-3">
@@ -619,6 +605,16 @@ const Taller = () => {
                                                     </div>
                                                 ))}
                                             </div>
+                                            
+                                            {/* 🔥 Indicador Visual de Stock (Si ya fue descontado) */}
+                                            {formData.stockDeducted && (
+                                                <div className="mt-2 text-center">
+                                                    <span className="text-[10px] text-emerald-500 bg-emerald-500/10 border border-emerald-500/20 px-2 py-1 rounded flex items-center justify-center gap-1">
+                                                        <BoxSelect size={10} /> Stock ya descontado
+                                                    </span>
+                                                </div>
+                                            )}
+
                                             <div className="mt-4 pt-4 border-t border-white/10 flex justify-between text-white font-bold"><span>Total</span><span className="text-brand-cyan">${formData.selectedItems.reduce((acc, i) => acc + i.price, 0).toLocaleString('es-CL')}</span></div>
                                         </div>
                                     </div>
