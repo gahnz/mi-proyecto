@@ -11,7 +11,7 @@ import Pos from "./pages/Pos";
 import Taller from "./pages/Taller";
 import FlujoCaja from "./pages/FlujoCaja";
 import PortalTecnico from "./pages/PortalTecnico";
-// import LoginTecnico from "./pages/LoginTecnico"; 👈 ELIMINAR ESTO
+import Tracker from "./pages/Tracker";
 import ProtectedRoute from "./components/ProtectedRoute";
 
 function App() {
@@ -33,7 +33,7 @@ function App() {
         <Route path="/inventario" element={<ProtectedRoute requiredRole="admin"><Layout><Inventario /></Layout></ProtectedRoute>} />
         <Route path="/clientes" element={<ProtectedRoute requiredRole="admin"><Layout><Clientes /></Layout></ProtectedRoute>} />
         <Route path="/equipos" element={<ProtectedRoute requiredRole="admin"><Layout><Equipos /></Layout></ProtectedRoute>} />
-
+        <Route path="/tracker/:orderId" element={<Tracker />} />
         {/* Portal Técnico (Protegido pero accesible por rol tecnico) */}
         <Route path="/portal-tecnico" element={<ProtectedRoute requiredRole="tecnico"><PortalTecnico /></ProtectedRoute>} />
       </Routes>

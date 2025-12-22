@@ -6,26 +6,96 @@ import {
     Trash2,
     Laptop2,
     Cpu,
-    AlertTriangle
+    AlertTriangle,
+    Download,       // 👈 Icono Descarga
+    FileSpreadsheet // 👈 Icono Excel
 } from "lucide-react";
-import { toast } from "sonner"; // 👈 Importamos toast
+import * as XLSX from 'xlsx'; // 👈 Importamos la librería de Excel
+import { toast } from "sonner"; 
 import { EQUIP_TYPES } from "../data/mockData";
 import { useEquipos } from "../hooks/useEquipos";
 import { useInventory } from "../hooks/useInventory";
 
 const Equipos = () => {
-    const { equipments, loading: loadingEquipos, addEquipo, updateEquipo, deleteEquipo } = useEquipos();
+    // Agregamos createBulkEquipments del hook
+    const { equipments, loading: loadingEquipos, addEquipo, createBulkEquipments, updateEquipo, deleteEquipo } = useEquipos();
     const { inventory, loading: loadingInventory } = useInventory();
     
     const [searchTerm, setSearchTerm] = useState("");
     const [isModalOpen, setIsModalOpen] = useState(false);
     
-    // Estado para el modal de eliminación
     const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
     const [itemToDelete, setItemToDelete] = useState(null);
 
     const [editingId, setEditingId] = useState(null);
     const [newEquip, setNewEquip] = useState({ type: "Notebook", brand: "", model: "" });
+
+    // --- LÓGICA DE EXCEL ---
+
+    // 1. Descargar Plantilla
+    const handleDownloadTemplate = () => {
+        const headers = [
+            { TIPO: "Notebook", MARCA: "HP", MODELO: "Pavilion 15" },
+            { TIPO: "Smartphone", MARCA: "Samsung", MODELO: "Galaxy S23" },
+            { TIPO: "PC", MARCA: "Generico", MODELO: "Torre ATX" }
+        ];
+        
+        const ws = XLSX.utils.json_to_sheet(headers);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Plantilla Equipos");
+        XLSX.writeFile(wb, "Plantilla_Equipos.xlsx");
+    };
+
+    // 2. Subir Excel
+    const handleFileUpload = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        
+        reader.onload = (evt) => {
+            try {
+                const bstr = evt.target.result;
+                const wb = XLSX.read(bstr, { type: 'binary' });
+                const wsname = wb.SheetNames[0];
+                const ws = wb.Sheets[wsname];
+                const data = XLSX.utils.sheet_to_json(ws);
+
+                if (data.length === 0) {
+                    toast.error("El archivo está vacío");
+                    return;
+                }
+
+                // Mapeo: Columnas Excel (Mayúsculas) -> Base de Datos (Minúsculas)
+                const formattedData = data.map(row => ({
+                    type: row.TIPO || "Otro",
+                    brand: row.MARCA || "Genérico",
+                    model: row.MODELO || "Genérico"
+                }));
+
+                const promise = createBulkEquipments(formattedData);
+
+                toast.promise(promise, {
+                    loading: `Procesando ${formattedData.length} modelos...`,
+                    success: () => {
+                        e.target.value = null; // Limpiar input
+                        return `${formattedData.length} modelos importados exitosamente`;
+                    },
+                    error: (err) => {
+                        e.target.value = null;
+                        return `Error: ${err.message}`;
+                    }
+                });
+            } catch (error) {
+                console.error(error);
+                toast.error("Error al leer el archivo Excel");
+            }
+        };
+
+        reader.readAsBinaryString(file);
+    };
+
+    // --- FIN LÓGICA EXCEL ---
 
     const filteredEquipments = equipments.filter(item =>
         item.model.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -107,13 +177,40 @@ const Equipos = () => {
                     </h1>
                     <p className="text-slate-400 mt-1">Gestión centralizada en Nube ☁️</p>
                 </div>
-                <button
-                    onClick={() => handleOpenModal()}
-                    className="bg-brand-gradient hover:opacity-90 transition-opacity text-white px-6 py-2.5 rounded-xl font-medium flex items-center gap-2 shadow-lg shadow-brand-purple/20"
-                >
-                    <Plus size={20} />
-                    Registrar Modelo
-                </button>
+                
+                {/* Botones de Acción */}
+                <div className="flex flex-wrap gap-2">
+                    {/* Botón Descargar Plantilla */}
+                    <button 
+                        onClick={handleDownloadTemplate}
+                        className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-2.5 rounded-xl font-bold flex items-center gap-2 border border-white/10 transition-all text-xs uppercase tracking-wider"
+                        title="Descargar Plantilla Excel"
+                    >
+                        <Download size={16} /> Plantilla
+                    </button>
+
+                    {/* Botón Subir Excel */}
+                    <div className="relative">
+                        <input 
+                            type="file" 
+                            accept=".xlsx, .xls" 
+                            onChange={handleFileUpload} 
+                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                        />
+                        <button className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2.5 rounded-xl font-bold flex items-center gap-2 shadow-lg shadow-emerald-500/20 transition-all text-xs uppercase tracking-wider">
+                            <FileSpreadsheet size={16} /> Importar Excel
+                        </button>
+                    </div>
+
+                    {/* Botón Registrar Nuevo */}
+                    <button
+                        onClick={() => handleOpenModal()}
+                        className="bg-brand-gradient hover:opacity-90 transition-opacity text-white px-6 py-2.5 rounded-xl font-medium flex items-center gap-2 shadow-lg shadow-brand-purple/20 text-xs uppercase tracking-wider"
+                    >
+                        <Plus size={18} />
+                        Registrar Modelo
+                    </button>
+                </div>
             </div>
 
             {/* Search Bar */}

@@ -7,15 +7,15 @@ export const useWorkOrders = () => {
 
   // 1. Cargar Órdenes
   const fetchOrders = async () => {
-    setLoading(true);
-    
+    // 👇 AQUÍ ESTABA EL ERROR: He limpiado los comentarios dentro del select
     const { data, error } = await supabase
       .from('work_orders')
       .select(`
         *,
         customers (
           phone,
-          address
+          address,
+          comuna
         )
       `)
       .order('created_at', { ascending: false });
@@ -27,59 +27,61 @@ export const useWorkOrders = () => {
         ...o,
         db_id: o.id,               
         id: o.order_id,            
-        
         customer: o.customer_name || "Sin Nombre", 
         device: o.device_name || "Equipo Genérico",     
         type: o.device_type,
         problem: o.reported_failure,
         technician: o.technician_name,
         status: o.status,
-        date: new Date(o.created_at).toLocaleDateString('es-CL'),
+        date: new Date(o.created_at).toLocaleDateString('es-CL', { timeZone: 'America/Santiago' }),
         total_cost: o.total_cost,
-        
-        // 👇 AQUÍ ESTÁ EL CAMBIO IMPORTANTE:
         customer_phone: o.customers?.phone || o.customer_phone || "", 
-        
-        // 1. location: Es la MODALIDAD (Local / Terreno)
         location: o.location || "Local", 
+        customer_address: o.customers?.address || "No registrada",
         
-        // 2. customer_address: Es la DIRECCIÓN FÍSICA (Calle...)
-        customer_address: o.customers?.address || "No registrada", 
+        // Intentamos leer 'comuna' (español) o 'commune' (inglés)
+        customer_commune: o.customers?.comuna || o.customers?.commune || "", 
       })));
     }
     setLoading(false);
   };
 
-  useEffect(() => { fetchOrders(); }, []);
+  // ⚡ SUSCRIPCIÓN EN TIEMPO REAL
+  useEffect(() => {
+    fetchOrders(); 
 
-  // 2. Crear Orden
+    const channel = supabase
+      .channel('cambios_taller') 
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'work_orders' },
+        (payload) => { fetchOrders(); }
+      )
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, []);
+
+  // --- Funciones CRUD ---
   const createOrder = async (orderData) => {
     const { error } = await supabase.from('work_orders').insert([orderData]);
     if (error) throw error;
-    await fetchOrders();
   };
 
-  // 3. Actualizar Orden
+  const createBulkOrders = async (dataArray) => {
+    const { error } = await supabase.from('work_orders').insert(dataArray);
+    if (error) throw error;
+  };
+
   const updateOrder = async (uuid, updates) => {
-    const { error } = await supabase
-      .from('work_orders')
-      .update(updates)
-      .eq('id', uuid);
-
+    const { error } = await supabase.from('work_orders').update(updates).eq('id', uuid);
     if (error) throw error;
-    await fetchOrders();
   };
 
-  // 4. Eliminar Orden
   const deleteOrder = async (uuid) => {
-    const { error } = await supabase
-        .from('work_orders')
-        .delete()
-        .eq('id', uuid);
-
+    const { error } = await supabase.from('work_orders').delete().eq('id', uuid);
     if (error) throw error;
-    await fetchOrders();
   };
 
-  return { orders, loading, createOrder, updateOrder, deleteOrder, refresh: fetchOrders };
+  return { orders, loading, createOrder, createBulkOrders, updateOrder, deleteOrder, refresh: fetchOrders };
 };
