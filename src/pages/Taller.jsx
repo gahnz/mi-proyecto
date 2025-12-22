@@ -1,10 +1,10 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
     Plus, Search, CheckCircle2, AlertCircle, MoreVertical,
     Smartphone, Laptop, Tablet, User, Calendar, DollarSign,
     MapPin, Clock, FileText, PenTool, X, Trash2,
     Save, Monitor, Printer, Cpu, Lock, Share2,
-    Receipt, UploadCloud, FileCheck, BoxSelect // 👈 Icono nuevo
+    Receipt, UploadCloud, FileCheck, BoxSelect
 } from "lucide-react";
 import { supabase } from "../supabase/client";
 import { toast } from "sonner"; 
@@ -71,7 +71,7 @@ const Taller = () => {
         receiverName: "", receiverSignature: null,
         paymentMethod: "Efectivo",
         docType: "Boleta", docNumber: "", docUrl: "", docFile: null,
-        stockDeducted: false // 👈 Control interno
+        stockDeducted: false
     });
 
     useEffect(() => {
@@ -142,10 +142,42 @@ const Taller = () => {
         return matchesStatus && matchesSearch && matchesLocation && matchesTech;
     });
 
-    const selectedEquipmentObj = equipmentsList.find(e => e.id === Number(formData.equipmentId));
-    const compatibleItems = selectedEquipmentObj 
-        ? inventoryItems.filter(item => !item.compatible_models || item.compatible_models.length === 0 || item.compatible_models.includes(`${selectedEquipmentObj.brand} ${selectedEquipmentObj.model}`)) 
-        : [];
+    // 🔥🔥🔥 LÓGICA DE FILTRADO CORREGIDA (PARA SERVICIOS Y REPUESTOS) 🔥🔥🔥
+    const compatibleItems = useMemo(() => {
+        // 1. Obtenemos el equipo seleccionado
+        const selectedEquipmentObj = equipmentsList.find(e => e.id === Number(formData.equipmentId));
+
+        // 2. Si NO hay equipo seleccionado, mostrar SOLO Servicios Genéricos (sin modelos asignados)
+        if (!selectedEquipmentObj) {
+            return inventoryItems.filter(i => i.type === 'Servicio' && (!i.compatible_models || i.compatible_models.length === 0));
+        }
+
+        // 3. Normalizamos el nombre del equipo
+        const fullDeviceName = `${selectedEquipmentObj.brand} ${selectedEquipmentObj.model}`.toLowerCase().trim();
+
+        return inventoryItems.filter(item => {
+            const models = item.compatible_models || [];
+
+            // A. SERVICIOS GENÉRICOS (Sin lista de modelos) -> MOSTRAR SIEMPRE
+            if (item.type === 'Servicio' && models.length === 0) {
+                return true;
+            }
+
+            // B. REPUESTOS/CONSUMIBLES SIN LISTA -> OCULTAR (Por seguridad)
+            if (item.type !== 'Servicio' && models.length === 0) {
+                return false;
+            }
+
+            // C. ITEMS ESPECÍFICOS (Servicios Específicos o Repuestos con lista)
+            // Deben coincidir con el equipo seleccionado
+            const isMatch = models.some(modelString => {
+                const cleanModelString = modelString.toLowerCase().trim();
+                return fullDeviceName.includes(cleanModelString) || cleanModelString.includes(fullDeviceName);
+            });
+
+            return isMatch;
+        });
+    }, [inventoryItems, formData.equipmentId, equipmentsList]);
 
     const showFiscalFields = !['En cola', 'Trabajando'].includes(formData.status);
 
@@ -193,7 +225,7 @@ const Taller = () => {
             supabase.rpc('update_inventory_stock', {
                 item_id: item.id,
                 quantity: item.quantity || 1,
-                warehouse_name: "Bodega Local" // 👈 Debe coincidir con la llave en tu JSON
+                warehouse_name: "Bodega Local"
             })
         );
 
@@ -232,7 +264,7 @@ const Taller = () => {
             receiverName: repair.receiver_name || "", receiverSignature: repair.receiver_signature || null,
             paymentMethod: repair.payment_method || "Efectivo",
             docType: repair.doc_type || "Boleta", docNumber: repair.doc_number || "", docUrl: repair.doc_url || "", docFile: null,
-            stockDeducted: repair.stock_deducted || false // 👈 Cargamos estado de stock
+            stockDeducted: repair.stock_deducted || false
         });
         
         setEquipSearch(repair.device || repair.device_name || "");
@@ -287,9 +319,8 @@ const Taller = () => {
         const equipment = equipmentsList.find(e => e.id === Number(formData.equipmentId));
         const customerName = client ? (client.business_name || client.full_name) : "Cliente Manual";
 
-        // 🔥 LÓGICA DE DESCUENTO DE STOCK
+        // Lógica de descuento de stock
         let shouldDeductStock = false;
-        // Si pasamos a "Finalizado y Pagado" y AUN NO se ha descontado
         if (formData.status === "Finalizado y Pagado" && !formData.stockDeducted) {
             shouldDeductStock = true;
         }
@@ -321,17 +352,15 @@ const Taller = () => {
             doc_type: formData.docType,
             doc_number: formData.docNumber,
             doc_url: finalDocUrl,
-            stock_deducted: shouldDeductStock ? true : formData.stockDeducted // Marcamos como descontado
+            stock_deducted: shouldDeductStock ? true : formData.stockDeducted
         };
 
         const promise = (async () => {
             if (editingDbId) {
                 await updateOrder(editingDbId, orderPayload);
                 
-                // Ejecutamos acciones de cierre
                 if (formData.status === "Finalizado y Pagado") {
                     await registerCashFlowEntry(editingId, customerName, totalCost, formData.paymentMethod);
-                    
                     if (shouldDeductStock) {
                         await handleStockDeduction(formData.selectedItems);
                     }
@@ -357,7 +386,6 @@ const Taller = () => {
 
     const addItemToOrder = (item) => {
         if (formData.selectedItems.some(i => i.id === item.id)) return;
-        // Aseguramos que quantity sea 1 por defecto
         setFormData({ ...formData, selectedItems: [...formData.selectedItems, { id: item.id, name: item.name, price: item.price_sell, quantity: 1 }] });
     };
 
@@ -534,7 +562,6 @@ const Taller = () => {
                                                 <textarea className="w-full h-24 bg-slate-900 border border-amber-500/30 rounded-lg p-3 text-white resize-none text-sm focus:border-amber-500 transition-colors" placeholder="Apuntes visibles solo para técnicos..." value={formData.internalNotes} onChange={(e) => setFormData({ ...formData, internalNotes: e.target.value })}></textarea>
                                             </div>
 
-                                            {/* SECCION DOCUMENTOS FISCALES */}
                                             {showFiscalFields && (
                                                 <div className="mt-4 border-t border-white/10 pt-4 animate-in fade-in slide-in-from-top-2">
                                                     <label className="text-[10px] uppercase font-bold text-emerald-500 mb-2 block flex items-center gap-2">
@@ -542,80 +569,121 @@ const Taller = () => {
                                                     </label>
                                                     <div className="space-y-3">
                                                         <div className="grid grid-cols-2 gap-2">
-                                                            <select
-                                                                className="bg-slate-900 border border-slate-700 rounded-lg p-2 text-white text-xs"
-                                                                value={formData.docType}
-                                                                onChange={(e) => setFormData({ ...formData, docType: e.target.value })}
-                                                            >
-                                                                {DOC_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                                                            </select>
-                                                            <input
-                                                                type="text"
-                                                                placeholder="N° Folio/Doc"
-                                                                className="bg-slate-900 border border-slate-700 rounded-lg p-2 text-white text-xs"
-                                                                value={formData.docNumber}
-                                                                onChange={(e) => setFormData({ ...formData, docNumber: e.target.value })}
-                                                            />
+                                                            <select className="bg-slate-900 border border-slate-700 rounded-lg p-2 text-white text-xs" value={formData.docType} onChange={(e) => setFormData({ ...formData, docType: e.target.value })}>{DOC_TYPES.map(t => <option key={t} value={t}>{t}</option>)}</select>
+                                                            <input type="text" placeholder="N° Folio/Doc" className="bg-slate-900 border border-slate-700 rounded-lg p-2 text-white text-xs" value={formData.docNumber} onChange={(e) => setFormData({ ...formData, docNumber: e.target.value })} />
                                                         </div>
-
                                                         <div className="relative">
-                                                            <input
-                                                                type="file"
-                                                                accept="application/pdf"
-                                                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                                                                onChange={(e) => setFormData({ ...formData, docFile: e.target.files[0] })}
-                                                            />
+                                                            <input type="file" accept="application/pdf" className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" onChange={(e) => setFormData({ ...formData, docFile: e.target.files[0] })} />
                                                             <div className={`border border-dashed ${formData.docFile || formData.docUrl ? 'border-emerald-500 bg-emerald-500/10' : 'border-slate-700 bg-slate-900'} rounded-lg p-3 flex items-center justify-center gap-2 transition-all`}>
                                                                 {uploadingDoc ? <div className="animate-spin text-emerald-500"><Clock size={16} /></div> : <UploadCloud size={16} className={formData.docFile ? "text-emerald-500" : "text-slate-500"} />}
-                                                                <span className="text-xs text-slate-400">
-                                                                    {formData.docFile ? formData.docFile.name : (formData.docUrl ? "Documento Cargado (Click para cambiar)" : "Subir PDF del Documento")}
-                                                                </span>
+                                                                <span className="text-xs text-slate-400">{formData.docFile ? formData.docFile.name : (formData.docUrl ? "Documento Cargado (Click para cambiar)" : "Subir PDF del Documento")}</span>
                                                             </div>
                                                         </div>
-
-                                                        {formData.docUrl && !formData.docFile && (
-                                                            <a href={formData.docUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-emerald-400 hover:underline flex items-center gap-1">
-                                                                <FileCheck size={10} /> Ver documento actual
-                                                            </a>
-                                                        )}
+                                                        {formData.docUrl && !formData.docFile && (<a href={formData.docUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-emerald-400 hover:underline flex items-center gap-1"><FileCheck size={10} /> Ver documento actual</a>)}
                                                     </div>
                                                 </div>
                                             )}
                                         </div>
                                     </div>
 
+                                    {/* 🔥 SECCIÓN MEJORADA DE REPUESTOS (UX FIX + LOGICA) 🔥 */}
                                     <div className="lg:col-span-1 space-y-6">
                                         <div className="bg-slate-950/50 rounded-xl border border-white/5 h-full flex flex-col p-4">
                                             <label className="text-[10px] uppercase font-bold text-slate-500 mb-2 block">Repuestos / Servicios</label>
-                                            <div className="flex gap-2 mb-2">
-                                                <select id="itemSelect" className="flex-1 bg-slate-900 border border-slate-700 rounded-lg p-2 text-white text-xs">
-                                                    <option value="">Agregar item...</option>
-                                                    {compatibleItems.map(item => (<option key={item.id} value={item.id}>{item.name} (${Number(item.price_sell).toLocaleString('es-CL')})</option>))}
-                                                </select>
-                                                <button onClick={() => { const sel = document.getElementById('itemSelect'); const item = inventoryItems.find(i => String(i.id) === sel.value); if (item) addItemToOrder(item); }} className="bg-brand-purple p-2 rounded-lg text-white"><Plus size={16} /></button>
+                                            
+                                            {/* Mensaje de estado */}
+                                            {formData.equipmentId && compatibleItems.length === 0 && (
+                                                <p className="text-xs text-amber-500 mb-2 font-bold bg-amber-500/10 p-2 rounded border border-amber-500/20">
+                                                    ⚠️ No hay items asignados a este modelo.
+                                                </p>
+                                            )}
+
+                                            <div className="flex items-center gap-2 mb-3">
+                                                {/* Contenedor del Select con min-w-0 para evitar desbordes y TRUNCATE */}
+                                                <div className="relative flex-1 min-w-0">
+                                                    <select 
+                                                        id="itemSelect" 
+                                                        className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white text-xs outline-none focus:border-brand-purple transition-all truncate pr-8 appearance-none"
+                                                        style={{ backgroundImage: 'none' }}
+                                                    >
+                                                        <option value="">
+                                                            {formData.equipmentId ? "Seleccionar item..." : "Primero selecciona un equipo"}
+                                                        </option>
+                                                        {compatibleItems.map(item => {
+                                                            // Cortar nombres largos para el select
+                                                            const name = item.name.length > 35 ? item.name.substring(0, 35) + '...' : item.name;
+                                                            return (
+                                                                <option key={item.id} value={item.id}>
+                                                                    {name} — ${Number(item.price_sell).toLocaleString('es-CL')}
+                                                                </option>
+                                                            );
+                                                        })}
+                                                    </select>
+                                                    {/* Flecha personalizada */}
+                                                    <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-500">
+                                                        <svg width="10" height="6" viewBox="0 0 10 6" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                                                    </div>
+                                                </div>
+
+                                                {/* Botón con shrink-0 para que nunca se oculte */}
+                                                <button 
+                                                    onClick={() => { 
+                                                        const sel = document.getElementById('itemSelect'); 
+                                                        const item = inventoryItems.find(i => String(i.id) === sel.value); 
+                                                        if (item) addItemToOrder(item); 
+                                                    }} 
+                                                    className="bg-brand-purple hover:bg-brand-purple/80 text-white w-10 h-10 rounded-xl flex items-center justify-center shrink-0 shadow-lg shadow-brand-purple/20 transition-all active:scale-95"
+                                                    title="Agregar a la lista"
+                                                >
+                                                    <Plus size={20} strokeWidth={3} />
+                                                </button>
                                             </div>
-                                            <div className="flex-1 overflow-y-auto space-y-2 custom-scrollbar max-h-[200px]">
+
+                                            <div className="flex-1 overflow-y-auto space-y-2 custom-scrollbar max-h-[200px] pr-1">
                                                 {formData.selectedItems.map((item) => (
-                                                    <div key={item.id} className="bg-slate-800/50 p-2 rounded flex justify-between items-center text-xs text-white">
-                                                        <span className="flex-1 mr-2">{item.name}</span>
+                                                    <div key={item.id} className="bg-slate-800/50 p-2.5 rounded-lg border border-white/5 flex justify-between items-center text-xs text-white group hover:bg-slate-800 transition-all">
+                                                        <span className="flex-1 mr-2 font-medium line-clamp-1" title={item.name}>{item.name}</span>
                                                         <div className="flex items-center gap-2">
-                                                            <div className="flex items-center bg-slate-900 border border-slate-700 rounded px-1"><span className="text-slate-500 mr-1">$</span><input type="number" value={item.price} onChange={(e) => updateItemPrice(item.id, e.target.value)} className="w-16 bg-transparent text-right outline-none text-brand-cyan font-mono" /></div>
-                                                            <button onClick={() => removeItemFromOrder(item.id)} className="text-red-400 hover:text-red-300"><Trash2 size={14} /></button>
+                                                            <div className="flex items-center bg-slate-900 border border-slate-700 rounded-lg px-2 py-1">
+                                                                <span className="text-slate-500 mr-1">$</span>
+                                                                <input 
+                                                                    type="number" 
+                                                                    value={item.price} 
+                                                                    onChange={(e) => updateItemPrice(item.id, e.target.value)} 
+                                                                    className="w-16 bg-transparent text-right outline-none text-brand-cyan font-mono font-bold" 
+                                                                />
+                                                            </div>
+                                                            <button 
+                                                                onClick={() => removeItemFromOrder(item.id)} 
+                                                                className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-400/10 transition-all"
+                                                            >
+                                                                <Trash2 size={14} />
+                                                            </button>
                                                         </div>
                                                     </div>
                                                 ))}
+                                                {formData.selectedItems.length === 0 && (
+                                                    <div className="text-center py-8 text-slate-600 text-[10px] italic border-2 border-dashed border-white/5 rounded-xl">
+                                                        Sin items agregados
+                                                    </div>
+                                                )}
                                             </div>
                                             
-                                            {/* 🔥 Indicador Visual de Stock (Si ya fue descontado) */}
+                                            {/* Indicador Visual de Stock */}
                                             {formData.stockDeducted && (
                                                 <div className="mt-2 text-center">
-                                                    <span className="text-[10px] text-emerald-500 bg-emerald-500/10 border border-emerald-500/20 px-2 py-1 rounded flex items-center justify-center gap-1">
-                                                        <BoxSelect size={10} /> Stock ya descontado
+                                                    <span className="text-[10px] text-emerald-500 bg-emerald-500/10 border border-emerald-500/20 px-2 py-1 rounded-full flex items-center justify-center gap-1 font-bold">
+                                                        <BoxSelect size={12} /> Stock descontado
                                                     </span>
                                                 </div>
                                             )}
 
-                                            <div className="mt-4 pt-4 border-t border-white/10 flex justify-between text-white font-bold"><span>Total</span><span className="text-brand-cyan">${formData.selectedItems.reduce((acc, i) => acc + i.price, 0).toLocaleString('es-CL')}</span></div>
+                                            <div className="mt-4 pt-4 border-t border-white/10 flex justify-between items-end">
+                                                <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Total Estimado</span>
+                                                <span className="text-xl font-black text-brand-cyan tracking-tighter">
+                                                    ${formData.selectedItems.reduce((acc, i) => acc + i.price, 0).toLocaleString('es-CL')}
+                                                </span>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>

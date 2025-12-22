@@ -3,7 +3,8 @@ import {
     Plus, Search, AlertTriangle, Edit3, Trash2, X, Wrench, 
     Home, Truck, Zap, Smartphone, ShoppingCart, PackageCheck, 
     ClipboardList, Calendar, Hash, Clock, PackagePlus, DollarSign,
-    CheckSquare, ArrowUpDown, ArrowUp, ArrowDown, ExternalLink, Link as LinkIcon
+    CheckSquare, Square, ArrowUpDown, ArrowUp, ArrowDown, ExternalLink, Link as LinkIcon,
+    Copy, ListChecks // 👈 ICONO NUEVO
 } from "lucide-react";
 import { toast } from "sonner"; 
 import { supabase } from "../supabase/client"; 
@@ -29,13 +30,15 @@ export default function Inventario() {
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [itemToDelete, setItemToDelete] = useState(null);
   const [editingId, setEditingId] = useState(null);
+  
+  // 🔥 ESTADOS PARA EL BUSCADOR DE MODELOS
   const [modelSearch, setModelSearch] = useState("");
   const [showModelOptions, setShowModelOptions] = useState(false);
 
   // ESTADOS DE COMPRAS
   const [orders, setOrders] = useState([]);
   const [isOrderModalOpen, setIsOrderModalOpen] = useState(false);
-  // 👇 AGREGADO: trackingUrl
+  const [editingOrderId, setEditingOrderId] = useState(null);
   const [newOrder, setNewOrder] = useState({ supplier: "", trackingCode: "", trackingUrl: "", estimatedDate: "", items: [] });
   const [itemSelectorSearch, setItemSelectorSearch] = useState("");
 
@@ -80,21 +83,137 @@ export default function Inventario() {
       return sortConfig.direction === 'asc' ? <ArrowUp size={12} className="text-brand-purple" /> : <ArrowDown size={12} className="text-brand-purple" />;
   };
 
+  // --- LÓGICA DE MODELOS COMPATIBLES (MULTI-CHECK + SELECT ALL) ---
+  
+  const filteredEquips = availableEquipments.filter(eq => {
+      const searchString = `${eq.brand} ${eq.model} ${eq.type}`.toLowerCase();
+      return searchString.includes(modelSearch.toLowerCase());
+  });
+
+  const toggleCompatibleModel = (modelName) => {
+      const currentModels = formData.compatible_models;
+      if (currentModels.includes(modelName)) {
+          setFormData({ ...formData, compatible_models: currentModels.filter(m => m !== modelName) });
+      } else {
+          setFormData({ ...formData, compatible_models: [...currentModels, modelName] });
+      }
+  };
+
+  // 🔥 NUEVA FUNCIÓN: SELECCIONAR TODO LO VISIBLE
+  const handleSelectAllVisible = () => {
+      const visibleModelNames = filteredEquips.map(eq => `${eq.brand} ${eq.model}`);
+      
+      // Verificamos si TODOS los visibles ya están seleccionados
+      const allSelected = visibleModelNames.every(name => formData.compatible_models.includes(name));
+
+      if (allSelected) {
+          // DESELECCIONAR TODO LO VISIBLE
+          setFormData({
+              ...formData,
+              compatible_models: formData.compatible_models.filter(m => !visibleModelNames.includes(m))
+          });
+      } else {
+          // SELECCIONAR TODO LO VISIBLE (Merge sin duplicados)
+          const newSelection = new Set([...formData.compatible_models, ...visibleModelNames]);
+          setFormData({
+              ...formData,
+              compatible_models: Array.from(newSelection)
+          });
+      }
+  };
+
+  const removeCompatibleModel = (modelName) => {
+      setFormData({ 
+          ...formData, 
+          compatible_models: formData.compatible_models.filter(m => m !== modelName) 
+      });
+  };
+
+  // --- LÓGICA DE GESTIÓN DE ÍTEMS ---
+  const handleEdit = (item) => {
+    setEditingId(item.id);
+    setFormData({
+      type: item.type, name: item.name, sku: item.sku || "",
+      price_sell: item.price_sell, price_cost: item.price_cost || 0,
+      stocksByWarehouse: item.stocksByWarehouse || { ...initialStocks },
+      min_stock: item.min_stock, compatible_models: item.compatible_models || []
+    });
+    setIsModalOpen(true);
+  };
+
+  const handleDuplicate = (item) => {
+      setEditingId(null); 
+      setFormData({
+          type: item.type,
+          name: `${item.name} (Copia)`, 
+          sku: "", 
+          price_sell: item.price_sell,
+          price_cost: item.price_cost || 0,
+          stocksByWarehouse: { ...initialStocks }, 
+          min_stock: item.min_stock,
+          compatible_models: [...(item.compatible_models || [])] 
+      });
+      setIsModalOpen(true);
+      toast.info("Ítem duplicado. Revisa el nombre y SKU.");
+  };
+
+  const confirmDelete = (item) => { setItemToDelete(item); setIsDeleteModalOpen(true); };
+  
+  const handleDelete = async () => {
+    if (!itemToDelete) return;
+    await deleteItem(itemToDelete.id);
+    setIsDeleteModalOpen(false);
+    setItemToDelete(null);
+    toast.success("Ítem eliminado");
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    const promise = editingId ? updateItem(editingId, formData) : addItem(formData);
+    toast.promise(promise, { loading: 'Guardando...', success: 'Guardado correctamente', error: 'Error al guardar' });
+    try {
+        await promise;
+        setIsModalOpen(false);
+        setEditingId(null);
+        resetForm();
+    } catch (error) { console.error(error); }
+  };
+
+  const resetForm = () => {
+    setFormData({ type: "Repuesto", name: "", sku: "", price_sell: 0, price_cost: 0, stocksByWarehouse: { ...initialStocks }, min_stock: 5, compatible_models: [] });
+    setEditingId(null);
+    setModelSearch("");
+  };
+
+  const updateWarehouseStock = (warehouseId, value) => {
+    setFormData(prev => ({ ...prev, stocksByWarehouse: { ...prev.stocksByWarehouse, [warehouseId]: parseInt(value) || 0 } }));
+  };
+
+  // --- LOGICA DE COMPRAS ---
+  const openEditOrderModal = (order) => {
+      setEditingOrderId(order.id);
+      setNewOrder({
+          supplier: order.supplier_name, trackingCode: order.tracking_code || "", trackingUrl: order.tracking_url || "", estimatedDate: order.estimated_delivery_date || "", items: order.items || []
+      });
+      setIsOrderModalOpen(true);
+  };
+
+  const handleDeletePurchase = async (e, orderId) => {
+      e.stopPropagation();
+      if(!window.confirm("⚠️ ¿Estás seguro de eliminar esta orden de compra?")) return;
+      const { error } = await supabase.from('supply_orders').delete().eq('id', orderId);
+      if (error) { toast.error("Error al eliminar"); } else { toast.success("Orden eliminada"); fetchOrders(); }
+  };
+
   const handleAddItemToOrder = (item) => {
     const existing = newOrder.items.find(i => i.id === item.id);
     if (existing) return;
-    setNewOrder({
-        ...newOrder,
-        items: [...newOrder.items, { ...item, quantity: 1, purchase_cost: item.price_cost || 0 }]
-    });
+    setNewOrder({ ...newOrder, items: [...newOrder.items, { ...item, quantity: 1, purchase_cost: item.price_cost || 0 }] });
     setItemSelectorSearch(""); 
   };
 
   const updateOrderItem = (id, field, value) => {
-    setNewOrder({
-        ...newOrder,
-        items: newOrder.items.map(i => i.id === id ? { ...i, [field]: Number(value) } : i)
-    });
+    setNewOrder({ ...newOrder, items: newOrder.items.map(i => i.id === id ? { ...i, [field]: Number(value) } : i) });
   };
 
   const removeOrderItem = (id) => {
@@ -102,35 +221,24 @@ export default function Inventario() {
   };
 
   const submitOrder = async () => {
-    if (!newOrder.supplier || newOrder.items.length === 0) {
-        toast.error("Falta proveedor o items");
-        return;
-    }
-
+    if (!newOrder.supplier || newOrder.items.length === 0) { toast.error("Falta proveedor o items"); return; }
     const total = newOrder.items.reduce((acc, i) => acc + (i.quantity * i.purchase_cost), 0);
-
-    const { error } = await supabase.from('supply_orders').insert([{
-        supplier_name: newOrder.supplier,
-        items: newOrder.items,
-        total_cost: total,
-        status: 'Pendiente',
-        tracking_code: newOrder.trackingCode,
-        tracking_url: newOrder.trackingUrl, // 👈 GUARDAMOS LA URL
-        estimated_delivery_date: newOrder.estimatedDate || null
-    }]);
-
-    if (error) { toast.error("Error al crear orden"); } 
-    else {
-        toast.success("Orden de compra creada");
-        setIsOrderModalOpen(false);
-        setNewOrder({ supplier: "", trackingCode: "", trackingUrl: "", estimatedDate: "", items: [] });
-        fetchOrders();
-    }
+    const payload = {
+        supplier_name: newOrder.supplier, items: newOrder.items, total_cost: total,
+        tracking_code: newOrder.trackingCode, tracking_url: newOrder.trackingUrl, estimated_delivery_date: newOrder.estimatedDate || null
+    };
+    if (!editingOrderId) { payload.status = 'Pendiente'; }
+    let promise;
+    if (editingOrderId) { promise = supabase.from('supply_orders').update(payload).eq('id', editingOrderId); } 
+    else { promise = supabase.from('supply_orders').insert([payload]); }
+    const { error } = await promise;
+    if (error) { toast.error("Error al guardar orden"); } 
+    else { toast.success(editingOrderId ? "Orden actualizada" : "Orden creada"); setIsOrderModalOpen(false); setNewOrder({ supplier: "", trackingCode: "", trackingUrl: "", estimatedDate: "", items: [] }); setEditingOrderId(null); fetchOrders(); }
   };
 
-  const handleReceiveOrder = async (order) => {
+  const handleReceiveOrder = async (e, order) => {
+    e.stopPropagation();
     if (!window.confirm("¿Confirmar recepción? Se sumará el stock a Bodega Local.")) return;
-
     const promises = order.items.map(async (item) => {
         const { data: currentData } = await supabase.from('inventory').select('stocks_by_warehouse').eq('id', item.id).single();
         if (currentData) {
@@ -140,37 +248,16 @@ export default function Inventario() {
             await supabase.from('inventory').update({ stocks_by_warehouse: newStocksJson }).eq('id', item.id);
         }
     });
-
     await Promise.all(promises);
     await supabase.from('supply_orders').update({ status: 'Recibido', received_at: new Date().toISOString() }).eq('id', order.id);
-
-    toast.success("📦 Stock recepcionado correctamente");
-    fetchOrders();
-    refreshInventory();
+    toast.success("📦 Stock recepcionado correctamente"); fetchOrders(); refreshInventory();
   };
 
-  // --- LOGICA DE INVENTARIO ---
-  const filteredEquips = availableEquipments.filter(eq => {
-      const searchString = `${eq.brand} ${eq.model} ${eq.type}`.toLowerCase();
-      return searchString.includes(modelSearch.toLowerCase());
-  });
-  const addCompatibleModel = (modelName) => { if (!formData.compatible_models.includes(modelName)) { setFormData({ ...formData, compatible_models: [...formData.compatible_models, modelName] }); } setModelSearch(""); };
-  const removeCompatibleModel = (modelName) => { setFormData({ ...formData, compatible_models: formData.compatible_models.filter(m => m !== modelName) }); };
-  const handleEdit = (item) => { setEditingId(item.id); setFormData({ type: item.type, name: item.name, sku: item.sku || "", price_sell: item.price_sell, price_cost: item.price_cost || 0, stocksByWarehouse: item.stocksByWarehouse || { ...initialStocks }, min_stock: item.min_stock, compatible_models: item.compatible_models || [] }); setIsModalOpen(true); };
-  const confirmDelete = (item) => { setItemToDelete(item); setIsDeleteModalOpen(true); };
-  const handleDelete = async () => { if (!itemToDelete) return; await deleteItem(itemToDelete.id); setIsDeleteModalOpen(false); setItemToDelete(null); toast.success("Ítem eliminado"); };
-  const handleSubmit = async (e) => { e.preventDefault(); const promise = editingId ? updateItem(editingId, formData) : addItem(formData); toast.promise(promise, { loading: 'Guardando...', success: 'Guardado correctamente', error: 'Error al guardar' }); try { await promise; setIsModalOpen(false); setEditingId(null); resetForm(); } catch (error) { console.error(error); } };
-  const resetForm = () => { setFormData({ type: "Repuesto", name: "", sku: "", price_sell: 0, price_cost: 0, stocksByWarehouse: { ...initialStocks }, min_stock: 5, compatible_models: [] }); setEditingId(null); setModelSearch(""); };
-  const updateWarehouseStock = (warehouseId, value) => { setFormData(prev => ({ ...prev, stocksByWarehouse: { ...prev.stocksByWarehouse, [warehouseId]: parseInt(value) || 0 } })); };
-  
+  // Filtrado y Ordenamiento
   const filteredItems = items.filter(i => i.name.toLowerCase().includes(searchTerm.toLowerCase()) || (i.sku && i.sku.toLowerCase().includes(searchTerm.toLowerCase())));
   
   const sortedItems = [...filteredItems].sort((a, b) => {
-      if (sortConfig.key === 'name') {
-          return sortConfig.direction === 'asc' 
-              ? a.name.localeCompare(b.name) 
-              : b.name.localeCompare(a.name);
-      }
+      if (sortConfig.key === 'name') { return sortConfig.direction === 'asc' ? a.name.localeCompare(b.name) : b.name.localeCompare(a.name); }
       if (sortConfig.key === 'totalStock') {
           const stockA = Object.values(a.stocksByWarehouse || {}).reduce((x, y) => x + y, 0);
           const stockB = Object.values(b.stocksByWarehouse || {}).reduce((x, y) => x + y, 0);
@@ -193,11 +280,16 @@ export default function Inventario() {
             <button onClick={() => setActiveTab('purchases')} className={`text-sm font-bold uppercase tracking-wider pb-1 transition-all ${activeTab === 'purchases' ? 'text-brand-cyan border-b-2 border-brand-cyan' : 'text-slate-500 hover:text-white'}`}>Compras / Reposición</button>
           </div>
         </div>
-        {activeTab === 'inventory' ? (
-            <button onClick={() => { resetForm(); setIsModalOpen(true); }} className="bg-brand-gradient hover:opacity-90 text-white px-6 py-2.5 rounded-xl flex items-center gap-2 font-black uppercase tracking-widest transition-all shadow-lg shadow-brand-purple/30 text-xs"><Plus size={18} /> Nuevo Ítem</button>
-        ) : (
-            <button onClick={() => setIsOrderModalOpen(true)} className="bg-brand-cyan hover:bg-brand-cyan/80 text-black px-6 py-2.5 rounded-xl flex items-center gap-2 font-black uppercase tracking-widest transition-all shadow-lg shadow-brand-cyan/30 text-xs"><ShoppingCart size={18} /> Nueva Compra</button>
-        )}
+        
+        <div className="flex gap-2">
+            {activeTab === 'inventory' ? (
+                <button onClick={() => { resetForm(); setIsModalOpen(true); }} className="bg-brand-gradient hover:opacity-90 text-white px-6 py-2.5 rounded-xl flex items-center gap-2 font-black uppercase tracking-widest transition-all shadow-lg shadow-brand-purple/30 text-xs ml-2">
+                    <Plus size={18} /> Nuevo Ítem
+                </button>
+            ) : (
+                <button onClick={() => { setEditingOrderId(null); setNewOrder({ supplier: "", trackingCode: "", trackingUrl: "", estimatedDate: "", items: [] }); setIsOrderModalOpen(true); }} className="bg-brand-cyan hover:bg-brand-cyan/80 text-black px-6 py-2.5 rounded-xl flex items-center gap-2 font-black uppercase tracking-widest transition-all shadow-lg shadow-brand-cyan/30 text-xs"><ShoppingCart size={18} /> Nueva Compra</button>
+            )}
+        </div>
       </div>
 
       {/* VISTA 1: INVENTARIO */}
@@ -232,18 +324,20 @@ export default function Inventario() {
                         <td className="px-6 py-4">
                             <div className="font-bold text-white uppercase text-sm tracking-tight flex items-center gap-2">
                                 {item.name}
-                                {isIncoming && (
-                                    <div className="flex items-center gap-1 bg-yellow-500/10 border border-yellow-500/20 text-yellow-500 text-[9px] px-2 py-0.5 rounded-full font-black animate-pulse" title="Hay una compra pendiente de recibir con este ítem">
-                                        <PackagePlus size={12} /> EN CAMINO
-                                    </div>
-                                )}
+                                {isIncoming && (<div className="flex items-center gap-1 bg-yellow-500/10 border border-yellow-500/20 text-yellow-500 text-[9px] px-2 py-0.5 rounded-full font-black animate-pulse" title="Hay una compra pendiente de recibir con este ítem"><PackagePlus size={12} /> EN CAMINO</div>)}
                             </div>
                             <div className="flex items-center gap-2 mt-1"><span className="text-[9px] px-1.5 py-0.5 rounded-md bg-brand-purple/20 text-brand-purple border border-brand-purple/30 uppercase font-black tracking-widest">{item.type}</span><span className="text-[10px] text-slate-500 font-mono tracking-tighter">SKU: {item.sku || 'N/A'}</span></div>
                         </td>
                         <td className="px-6 py-4"><div className="flex gap-2">{item.type === 'Servicio' ? (<span className="text-brand-purple text-[10px] font-black uppercase tracking-widest bg-brand-purple/10 px-3 py-1 rounded-lg border border-brand-purple/20">Servicio Intangible</span>) : (<>{WAREHOUSES.map(w => { const stock = item.stocksByWarehouse?.[w.id] || 0; if (stock === 0) return null; return (<div key={w.id} className={`flex items-center gap-1 px-2 py-1 rounded-lg border border-white/5 ${w.color}`}>{w.icon}<span className="text-[10px] font-black uppercase tracking-tighter">{stock}</span></div>); })} {(!item.stocksByWarehouse || Object.values(item.stocksByWarehouse).every(s => s === 0)) && (<span className="text-slate-600 text-[10px] font-bold uppercase tracking-widest italic">Sin stock físico</span>)}</>)}</div></td>
                         <td className="px-6 py-4 text-center">{item.type === 'Servicio' ? <span className="text-slate-600 text-sm font-bold uppercase tracking-widest">—</span> : <span className={`text-lg font-black italic tracking-tighter ${totalStock <= item.min_stock ? "text-rose-500" : "text-brand-cyan"}`}>{totalStock}</span>}</td>
                         <td className="px-6 py-4 text-right text-white font-black italic text-lg tracking-tighter shadow-sm">${(item.price_sell || 0).toLocaleString('es-CL')}</td>
-                        <td className="px-6 py-4"><div className="flex justify-center gap-2 truncate"><button onClick={() => handleEdit(item)} className="p-2 bg-white/5 hover:bg-brand-cyan/20 rounded-xl text-slate-400 hover:text-brand-cyan transition-all"><Edit3 size={18} /></button><button onClick={() => confirmDelete(item)} className="p-2 bg-white/5 hover:bg-red-500/20 rounded-xl text-slate-400 hover:text-red-400 transition-all"><Trash2 size={18} /></button></div></td>
+                        <td className="px-6 py-4">
+                            <div className="flex justify-center gap-2 truncate">
+                                <button onClick={() => handleDuplicate(item)} className="p-2 bg-white/5 hover:bg-brand-purple/20 rounded-xl text-slate-400 hover:text-brand-purple transition-all" title="Duplicar"><Copy size={18} /></button>
+                                <button onClick={() => handleEdit(item)} className="p-2 bg-white/5 hover:bg-brand-cyan/20 rounded-xl text-slate-400 hover:text-brand-cyan transition-all"><Edit3 size={18} /></button>
+                                <button onClick={() => confirmDelete(item)} className="p-2 bg-white/5 hover:bg-red-500/20 rounded-xl text-slate-400 hover:text-red-400 transition-all"><Trash2 size={18} /></button>
+                            </div>
+                        </td>
                         </tr>
                     );
                     })}
@@ -253,97 +347,23 @@ export default function Inventario() {
         </>
       )}
 
-      {/* VISTA 2: COMPRAS CON TRACKING Y URL */}
+      {/* VISTA 2: COMPRAS */}
       {activeTab === 'purchases' && (
         <div className="space-y-4">
             {orders.length === 0 && <div className="text-center py-20 text-slate-500 italic">No hay órdenes de compra registradas.</div>}
-            
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {orders.map(order => {
                     const isLate = order.estimated_delivery_date && new Date(order.estimated_delivery_date) < new Date() && order.status === 'Pendiente';
                     return (
-                        <div key={order.id} className="bg-slate-900 border border-white/5 p-5 rounded-[2rem] relative overflow-hidden group hover:border-brand-purple/30 transition-all shadow-xl flex flex-col justify-between h-full">
-                            
-                            {/* BADGE DE ESTADO FLOTANTE */}
+                        <div key={order.id} onClick={() => openEditOrderModal(order)} className="bg-slate-900 border border-white/5 p-5 rounded-[2rem] relative overflow-hidden group hover:border-brand-purple/30 transition-all shadow-xl flex flex-col justify-between h-full cursor-pointer hover:bg-slate-800/50">
                             {order.status === 'Recibido' && <div className="absolute right-0 top-0 bg-emerald-500/10 text-emerald-500 px-3 py-1.5 rounded-bl-2xl text-[9px] font-black uppercase tracking-widest border-l border-b border-emerald-500/20">Recibido</div>}
                             {order.status === 'Pendiente' && <div className="absolute right-0 top-0 bg-yellow-500/10 text-yellow-500 px-3 py-1.5 rounded-bl-2xl text-[9px] font-black uppercase tracking-widest border-l border-b border-yellow-500/20 animate-pulse">Pendiente</div>}
-
                             <div>
-                                {/* HEADER: PROVEEDOR */}
-                                <div className="mb-4 pr-16">
-                                    <h3 className="text-lg font-black text-white italic leading-tight">{order.supplier_name}</h3>
-                                    <p className="text-[10px] text-slate-500 flex items-center gap-1 mt-1 font-bold">
-                                        <Calendar size={10} /> {new Date(order.created_at).toLocaleDateString()}
-                                    </p>
-                                </div>
-
-                                {/* TRACKING INFO CON LINK */}
-                                {(order.estimated_delivery_date || order.tracking_code) && (
-                                    <div className="bg-white/5 rounded-xl p-3 mb-4 border border-white/5">
-                                        {order.estimated_delivery_date && (
-                                            <p className={`text-[10px] flex items-center gap-2 font-bold mb-1 ${isLate ? 'text-red-400' : 'text-brand-cyan'}`}>
-                                                <Clock size={12} /> Llegada: {new Date(order.estimated_delivery_date).toLocaleDateString()}
-                                            </p>
-                                        )}
-                                        {order.tracking_code && (
-                                            <div className="flex items-center justify-between">
-                                                <p className="text-[10px] text-slate-300 flex items-center gap-2 font-mono">
-                                                    <Hash size={12} /> {order.tracking_code}
-                                                </p>
-                                                {/* 🔥 BOTÓN DE SEGUIMIENTO */}
-                                                {order.tracking_url && (
-                                                    <a 
-                                                        href={order.tracking_url} 
-                                                        target="_blank" 
-                                                        rel="noopener noreferrer"
-                                                        className="text-[9px] text-brand-purple hover:text-white flex items-center gap-1 font-bold uppercase hover:underline"
-                                                    >
-                                                        <ExternalLink size={10} /> Seguir
-                                                    </a>
-                                                )}
-                                            </div>
-                                        )}
-                                    </div>
-                                )}
-
-                                {/* ITEMS SUMMARY (SCROLLABLE) */}
-                                <div className="bg-black/20 rounded-xl p-3 mb-4 max-h-32 overflow-y-auto custom-scrollbar border border-white/5">
-                                    <div className="text-[9px] text-slate-500 uppercase font-black tracking-widest mb-2 flex items-center gap-1">
-                                        <ClipboardList size={10} /> {order.items.length} Items
-                                    </div>
-                                    <div className="space-y-1.5">
-                                        {order.items.map((item, idx) => (
-                                            <div key={idx} className="flex justify-between text-xs text-slate-300 border-b border-white/5 last:border-0 pb-1 last:pb-0">
-                                                <span className="truncate pr-2">{item.quantity}x <strong className="text-white">{item.name}</strong></span>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
+                                <div className="mb-4 pr-16"><h3 className="text-lg font-black text-white italic leading-tight truncate">{order.supplier_name}</h3><p className="text-[10px] text-slate-500 flex items-center gap-1 mt-1 font-bold"><Calendar size={10} /> {new Date(order.created_at).toLocaleDateString()}</p></div>
+                                {(order.estimated_delivery_date || order.tracking_code) && (<div className="bg-white/5 rounded-xl p-3 mb-4 border border-white/5">{order.estimated_delivery_date && (<p className={`text-[10px] flex items-center gap-2 font-bold mb-1 ${isLate ? 'text-red-400' : 'text-brand-cyan'}`}><Clock size={12} /> Llegada: {new Date(order.estimated_delivery_date).toLocaleDateString()}</p>)}{order.tracking_code && (<div className="flex items-center justify-between"><p className="text-[10px] text-slate-300 flex items-center gap-2 font-mono"><Hash size={12} /> {order.tracking_code}</p>{order.tracking_url && (<a href={order.tracking_url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="text-[9px] text-brand-purple hover:text-white flex items-center gap-1 font-bold uppercase hover:underline"><ExternalLink size={10} /> Seguir</a>)}</div>)}</div>)}
+                                <div className="bg-black/20 rounded-xl p-3 mb-4 max-h-32 overflow-y-auto custom-scrollbar border border-white/5"><div className="text-[9px] text-slate-500 uppercase font-black tracking-widest mb-2 flex items-center gap-1"><ClipboardList size={10} /> {order.items.length} Items</div><div className="space-y-1.5">{order.items.map((item, idx) => (<div key={idx} className="flex justify-between text-xs text-slate-300 border-b border-white/5 last:border-0 pb-1 last:pb-0"><span className="truncate pr-2">{item.quantity}x <strong className="text-white">{item.name}</strong></span></div>))}</div></div>
                             </div>
-
-                            {/* FOOTER: TOTAL Y ACCIÓN */}
-                            <div className="pt-2 border-t border-white/10 mt-auto">
-                                <div className="flex justify-between items-end mb-3">
-                                    <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Total Orden</span>
-                                    <span className="text-xl font-black text-white italic tracking-tighter flex items-center">
-                                        <DollarSign size={14} className="text-slate-500 mr-0.5" />
-                                        {order.total_cost.toLocaleString('es-CL')}
-                                    </span>
-                                </div>
-
-                                {order.status === 'Pendiente' ? (
-                                    <button 
-                                        onClick={() => handleReceiveOrder(order)}
-                                        className="w-full bg-emerald-600 hover:bg-emerald-500 text-white py-2.5 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 transition-all shadow-lg shadow-emerald-500/20 active:scale-95"
-                                    >
-                                        <PackageCheck size={14} /> Recibir Stock
-                                    </button>
-                                ) : (
-                                    <div className="w-full bg-slate-800 text-slate-500 py-2.5 rounded-xl font-bold uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 cursor-default opacity-50">
-                                        <CheckSquare size={14} /> Finalizado
-                                    </div>
-                                )}
-                            </div>
+                            <div className="pt-2 border-t border-white/10 mt-auto"><div className="flex justify-between items-end mb-3"><span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Total Orden</span><span className="text-xl font-black text-white italic tracking-tighter flex items-center"><DollarSign size={14} className="text-slate-500 mr-0.5" />{order.total_cost.toLocaleString('es-CL')}</span></div><div className="flex gap-2"><button onClick={(e) => handleDeletePurchase(e, order.id)} className="p-2.5 bg-red-500/10 hover:bg-red-500/20 text-red-500 rounded-xl transition-all" title="Eliminar Compra"><Trash2 size={16} /></button>{order.status === 'Pendiente' ? (<button onClick={(e) => handleReceiveOrder(e, order)} className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white py-2.5 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 transition-all shadow-lg shadow-emerald-500/20 active:scale-95"><PackageCheck size={14} /> Recibir</button>) : (<div className="flex-1 bg-slate-800 text-slate-500 py-2.5 rounded-xl font-bold uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 cursor-default opacity-50"><CheckSquare size={14} /> Finalizado</div>)}</div></div>
                         </div>
                     );
                 })}
@@ -351,11 +371,10 @@ export default function Inventario() {
         </div>
       )}
 
-      {/* MODAL CREAR ITEM */}
+      {/* MODAL CREAR/EDITAR ITEM (INVENTARIO) */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-md flex items-center justify-center z-[100] p-4">
           <div className="bg-slate-900 border border-white/10 w-full max-w-3xl rounded-[2.5rem] shadow-2xl overflow-hidden border-t-brand-purple border-t-4 flex flex-col max-h-[90vh] animate-in fade-in zoom-in duration-300">
-            {/* ... Formulario de items ... */}
             <div className="flex justify-between items-center p-8 pb-4">
               <div className="flex items-center gap-4"><div className="w-12 h-12 rounded-2xl bg-brand-gradient flex items-center justify-center text-white shadow-lg"><Wrench size={24} /></div><div><h2 className="text-2xl font-black text-white uppercase italic tracking-tighter">{editingId ? 'Editar Ítem' : 'Nuevo Registro'}</h2><p className="text-[10px] text-slate-500 uppercase font-bold tracking-[0.2em]">Gestión Centralizada Pro v2</p></div></div>
               <button onClick={() => setIsModalOpen(false)} className="bg-slate-800 hover:bg-white hover:text-slate-900 transition-all text-slate-400 p-2 rounded-xl"><X size={24} /></button>
@@ -371,7 +390,45 @@ export default function Inventario() {
                   </div>
                   <div className="space-y-6">
                     {formData.type !== 'Servicio' && (<div className="space-y-4"><label className="text-[10px] uppercase font-black text-slate-500 tracking-widest ml-1 flex items-center gap-2"><Zap size={12} className="text-yellow-400" /> Distribución de Stock por Bodega</label><div className="grid grid-cols-1 gap-3">{WAREHOUSES.map(w => (<div key={w.id} className="flex items-center gap-4 bg-slate-950 p-3 rounded-2xl border border-white/5 group hover:border-brand-purple/50 transition-all"><div className={`w-10 h-10 rounded-xl flex items-center justify-center ${w.color}`}>{w.icon}</div><div className="flex-1"><p className="text-[9px] font-black uppercase text-slate-500 tracking-[0.15em]">{w.label}</p></div><input type="number" className="w-20 bg-slate-900 border border-white/5 rounded-lg p-2 text-center text-white font-black outline-none focus:border-brand-purple" value={formData.stocksByWarehouse[w.id]} onChange={(e) => updateWarehouseStock(w.id, e.target.value)} /></div>))}</div></div>)}
-                    <div className="space-y-2"><label className="text-[10px] uppercase font-black text-slate-500 tracking-widest ml-1 flex items-center gap-2"><Smartphone size={12} /> Modelos Compatibles</label><div className="flex flex-wrap gap-2 mb-3">{formData.compatible_models.map((model, index) => (<span key={index} className="bg-brand-purple/20 text-brand-purple border border-brand-purple/30 px-3 py-1 rounded-lg text-xs font-bold flex items-center gap-2 animate-in fade-in zoom-in">{model}<button type="button" onClick={() => removeCompatibleModel(model)} className="hover:text-white"><X size={12} /></button></span>))}</div><div className="relative"><input type="text" className="w-full bg-slate-950 border border-white/5 rounded-xl p-3 pl-10 text-white text-sm focus:border-brand-cyan outline-none" placeholder="Buscar equipo..." value={modelSearch} onChange={(e) => { setModelSearch(e.target.value); setShowModelOptions(true); }} onFocus={() => setShowModelOptions(true)} /><Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={16} />{showModelOptions && modelSearch && (<div className="absolute bottom-full left-0 right-0 mb-2 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl max-h-48 overflow-y-auto z-50 custom-scrollbar">{filteredEquips.length > 0 ? (filteredEquips.map(eq => (<div key={eq.id} onClick={() => addCompatibleModel(`${eq.brand} ${eq.model}`)} className="p-3 hover:bg-white/10 cursor-pointer border-b border-white/5 text-sm text-white flex justify-between items-center"><span>{eq.brand} <strong>{eq.model}</strong></span><span className="text-[10px] text-slate-500 uppercase">{eq.type}</span></div>))) : (<div onClick={() => addCompatibleModel(modelSearch)} className="p-3 hover:bg-white/10 cursor-pointer text-sm text-brand-cyan font-bold">Agregar "{modelSearch}" como nuevo</div>)}</div>)}</div></div>
+                    <div className="space-y-2"><label className="text-[10px] uppercase font-black text-slate-500 tracking-widest ml-1 flex items-center gap-2"><Smartphone size={12} /> Modelos Compatibles (Multi-Select)</label>
+                        <div className="flex flex-wrap gap-2 mb-3">{formData.compatible_models.map((model, index) => (<span key={index} className="bg-brand-purple/20 text-brand-purple border border-brand-purple/30 px-3 py-1 rounded-lg text-xs font-bold flex items-center gap-2 animate-in fade-in zoom-in">{model}<button type="button" onClick={() => removeCompatibleModel(model)} className="hover:text-white"><X size={12} /></button></span>))}</div>
+                        
+                        <div className="relative">
+                            <input type="text" className="w-full bg-slate-950 border border-white/5 rounded-xl p-3 pl-10 text-white text-sm focus:border-brand-cyan outline-none" placeholder="Buscar equipo..." value={modelSearch} onChange={(e) => { setModelSearch(e.target.value); setShowModelOptions(true); }} onFocus={() => setShowModelOptions(true)} />
+                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={16} />
+                            
+                            {/* 🔥 DROPDOWN CORREGIDO: top-full y Multi-Select con "Seleccionar Todo" */}
+                            {showModelOptions && modelSearch && (
+                                <div className="absolute top-full left-0 right-0 mt-2 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl max-h-48 overflow-y-auto z-50 custom-scrollbar">
+                                    {filteredEquips.length > 0 ? (
+                                        <>
+                                            {/* OPCIÓN SELECCIONAR TODO */}
+                                            <div onClick={handleSelectAllVisible} className="p-3 cursor-pointer border-b border-white/10 text-xs font-bold text-brand-cyan flex items-center gap-2 bg-slate-900 sticky top-0 z-10 hover:bg-white/5 backdrop-blur-sm">
+                                                <ListChecks size={16} />
+                                                <span>Seleccionar / Deseleccionar Todo ({filteredEquips.length})</span>
+                                            </div>
+
+                                            {filteredEquips.map(eq => {
+                                                const fullName = `${eq.brand} ${eq.model}`;
+                                                const isSelected = formData.compatible_models.includes(fullName);
+                                                return (
+                                                    <div key={eq.id} onClick={() => toggleCompatibleModel(fullName)} className={`p-3 hover:bg-white/10 cursor-pointer border-b border-white/5 text-sm flex justify-between items-center ${isSelected ? 'bg-brand-purple/10 text-brand-purple font-bold' : 'text-white'}`}>
+                                                        <div className="flex items-center gap-2">
+                                                            {isSelected ? <CheckSquare size={16} /> : <Square size={16} className="text-slate-500"/>}
+                                                            <span>{eq.brand} <strong>{eq.model}</strong></span>
+                                                        </div>
+                                                        <span className="text-[10px] text-slate-500 uppercase">{eq.type}</span>
+                                                    </div>
+                                                );
+                                            })}
+                                        </>
+                                    ) : (
+                                        <div onClick={() => toggleCompatibleModel(modelSearch)} className="p-3 hover:bg-white/10 cursor-pointer text-sm text-brand-cyan font-bold flex items-center gap-2"><Plus size={16}/> Agregar "{modelSearch}" como nuevo</div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    </div>
                   </div>
                 </div>
                 <div className="pt-6 border-t border-white/5 flex gap-4"><button type="button" onClick={() => setIsModalOpen(false)} className="flex-1 py-4 bg-slate-950 text-slate-500 font-black uppercase tracking-widest rounded-2xl border border-white/5 hover:text-white transition-all">Cancelar</button><button type="submit" className="flex-[2] bg-brand-gradient text-white font-black uppercase tracking-[0.2em] py-4 rounded-2xl shadow-xl shadow-brand-purple/40 hover:scale-[1.02] active:scale-95 transition-all italic">{editingId ? 'Actualizar Ficha' : 'Registrar en Inventario'}</button></div>
@@ -381,14 +438,16 @@ export default function Inventario() {
         </div>
       )}
 
-      {/* MODAL CREAR ORDEN DE COMPRA (ACTUALIZADO CON URL) */}
+      {/* MODAL CREAR/EDITAR ORDEN DE COMPRA */}
       {isOrderModalOpen && (
         <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-md flex items-center justify-center z-[100] p-4">
             <div className="bg-slate-900 border border-white/10 w-full max-w-4xl rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col max-h-[90vh] animate-in fade-in zoom-in duration-300">
                 <div className="flex justify-between items-center p-8 pb-4 border-b border-white/5">
                     <div>
-                        <h2 className="text-2xl font-black text-white uppercase italic tracking-tighter">Nueva Orden de Compra</h2>
-                        <p className="text-slate-500 text-xs">Reposición de Stock a Bodega Local</p>
+                        <h2 className="text-2xl font-black text-white uppercase italic tracking-tighter">
+                            {editingOrderId ? 'Editar Compra' : 'Nueva Orden'}
+                        </h2>
+                        <p className="text-slate-500 text-xs">Gestión de aprovisionamiento</p>
                     </div>
                     <button onClick={() => setIsOrderModalOpen(false)} className="text-slate-400 hover:text-white"><X size={24}/></button>
                 </div>
@@ -400,7 +459,6 @@ export default function Inventario() {
                                 <input className="w-full bg-slate-950 border border-white/10 rounded-xl p-3 text-white" placeholder="Ej: AliExpress..." value={newOrder.supplier} onChange={e => setNewOrder({...newOrder, supplier: e.target.value})} />
                             </div>
                             
-                            {/* 🔥 NUEVO CAMPO: URL DE SEGUIMIENTO */}
                             <div>
                                 <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 flex items-center gap-1"><LinkIcon size={10} /> Link de Seguimiento (URL)</label>
                                 <input className="w-full bg-slate-950 border border-white/10 rounded-xl p-3 text-white text-xs" placeholder="Ej: https://blue.cl/tracking/123..." value={newOrder.trackingUrl} onChange={e => setNewOrder({...newOrder, trackingUrl: e.target.value})} />
@@ -443,7 +501,9 @@ export default function Inventario() {
                             ))}
                         </div>
                         <div className="border-t border-white/10 pt-4 flex justify-between items-center mb-4"><span className="text-slate-400 font-bold uppercase text-xs">Total Estimado</span><span className="text-2xl font-black text-white italic">${newOrder.items.reduce((acc, i) => acc + (i.quantity * i.purchase_cost), 0).toLocaleString()}</span></div>
-                        <button onClick={submitOrder} className="w-full bg-brand-gradient text-white py-4 rounded-xl font-black uppercase tracking-widest shadow-lg shadow-brand-purple/20 hover:scale-[1.02] transition-all">Generar Orden</button>
+                        <button onClick={submitOrder} className="w-full bg-brand-gradient text-white py-4 rounded-xl font-black uppercase tracking-widest shadow-lg shadow-brand-purple/20 hover:scale-[1.02] transition-all">
+                            {editingOrderId ? "Guardar Cambios" : "Generar Orden"}
+                        </button>
                     </div>
                 </div>
             </div>
