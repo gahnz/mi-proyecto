@@ -1,11 +1,14 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
     DollarSign, Plus, Search, ArrowUpCircle, ArrowDownCircle,
     FileText, Calendar, TrendingUp, Download, Trash2,
     Info, Calculator, Landmark, Pencil, CreditCard, Banknote, Percent,
-    ShoppingBag, X, AlertTriangle, PackageMinus, Store
+    ShoppingBag, X, AlertTriangle, PackageMinus, Store,
+    Lock, Unlock, CheckCircle, Clock, Truck, 
+    Eye, UploadCloud, FileCheck
 } from "lucide-react";
 import { toast } from "sonner";
+import { supabase } from "../supabase/client";
 import { useCashFlow } from "../hooks/useCashFlow";
 import { useInventory } from "../hooks/useInventory";
 
@@ -29,23 +32,20 @@ const TAX_CATEGORIES = [
     { id: "G_GENERAL", label: "Gasto General / Otros", type: "expense" }
 ];
 
-// 🔥 LISTA DE BODEGAS ACTUALIZADA
-const WAREHOUSES = [
-    "Bodega Local",
-    "Mercado Libre",
-    "Mercado Full"
-];
+const WAREHOUSES = ["Bodega Local", "Mercado Libre", "Mercado Full"];
 
 const FlujoCaja = () => {
-    const { movements, loading, addMovement, updateMovement, deleteMovement } = useCashFlow();
+    const { movements, loading, addMovement, updateMovement, deleteMovement, uploadDocument } = useCashFlow();
     const { inventory, updateItem } = useInventory();
 
+    const [technicians, setTechnicians] = useState([]);
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [isEcommerceModalOpen, setIsEcommerceModalOpen] = useState(false);
     const [filterType, setFilterType] = useState("Todos");
     const [searchTerm, setSearchTerm] = useState("");
     const [editingId, setEditingId] = useState(null);
     const [filterMonth, setFilterMonth] = useState(new Date().toISOString().slice(0, 7));
+    const [uploadingId, setUploadingId] = useState(null);
     
     // UI Helpers
     const [itemSearchTerm, setItemSearchTerm] = useState("");
@@ -72,267 +72,128 @@ const FlujoCaja = () => {
         commissionAmount: 0,
         isEcommerce: false,
         itemId: "",
-        warehouse: "Bodega Local",
-        quantity: 1
+        warehouse: "Mercado Libre",
+        quantity: 1,
+        status: "confirmed",
+        deliveryBy: "",
+        docUrl: ""
     });
 
+    useEffect(() => {
+        const fetchTechnicians = async () => {
+            const { data } = await supabase
+                .from("profiles")
+                .select("full_name")
+                .in("role", ["tecnico", "coordinador", "admin"]);
+            if (data) setTechnicians(data.map(t => t.full_name).filter(Boolean));
+        };
+        fetchTechnicians();
+    }, []);
+
+    const handleFileUpload = async (e, movementId) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        setUploadingId(movementId);
+        const promise = uploadDocument(movementId, file);
+
+        toast.promise(promise, {
+            loading: 'Subiendo documento...',
+            success: () => {
+                setUploadingId(null);
+                return 'Documento adjuntado correctamente 📎';
+            },
+            error: (err) => {
+                setUploadingId(null);
+                return `Error: ${err.message}`;
+            }
+        });
+    };
+
+    const handleReleaseFunds = async (movement) => {
+        if (!confirm(`¿Confirmar liberación de fondos de ${movement.paymentMethod}?`)) return;
+        const promise = updateMovement(movement.id, { 
+            ...movement, 
+            status: 'confirmed',
+            description: `${movement.description} (Liberado ${new Date().toLocaleDateString()})`
+        });
+        toast.promise(promise, { loading: 'Liberando...', success: '💰 Fondos disponibles', error: 'Error' });
+    };
+
     const handleSave = async () => {
-        // En modal E-commerce, validamos receivedAmount
-        if (formData.isEcommerce) {
-            if (!formData.receivedAmount || !formData.description) {
-                toast.error("Faltan datos", { description: "Debe ingresar el monto recibido y descripción." });
-                return;
-            }
-        } else {
-            if (!formData.totalAmount || !formData.description) {
-                toast.error("Faltan datos", { description: "Debe ingresar monto y descripción." });
-                return;
-            }
+        if (formData.isEcommerce && (!formData.receivedAmount || !formData.description)) {
+            toast.error("Faltan datos", { description: "Ingrese monto recibido y descripción." });
+            return;
+        } else if (!formData.isEcommerce && (!formData.totalAmount || !formData.description)) {
+            toast.error("Faltan datos", { description: "Ingrese monto y descripción." });
+            return;
         }
 
         const promise = (async () => {
-            // 1. PREPARAR DATOS PARA FLUJO DE CAJA
             let financialData = { ...formData };
+            const isEcommerce = formData.isEcommerce === true;
+            const isDigitalPayment = ["Mercado Pago", "Webpay"].includes(formData.paymentMethod);
 
-            // Si es E-commerce, guardamos lo que RECIBIMOS (Líquido)
-            if (formData.isEcommerce) {
+            financialData.status = (isEcommerce || isDigitalPayment) ? 'pending' : 'confirmed';
+
+            if (isEcommerce) {
                 financialData = {
-                    ...formData,
+                    ...financialData,
                     totalAmount: formData.receivedAmount, 
                     netAmount: formData.receivedAmount,   
                     taxAmount: 0, 
-                    description: `${formData.description} (Venta: $${Number(formData.totalAmount).toLocaleString()} | Comis: $${Number(formData.commissionAmount).toLocaleString()})`
+                    description: `${formData.description} (Venta: $${Number(formData.totalAmount || 0).toLocaleString()} | Comis: $${Number(formData.commissionAmount || 0).toLocaleString()})`
                 };
             }
 
-            // 2. GUARDAR EN BD (FINANZAS)
             if (editingId) {
                 await updateMovement(editingId, financialData);
             } else {
                 await addMovement(financialData);
             }
 
-            // 3. DESCONTAR STOCK (SOLO E-COMMERCE NUEVO)
-            if (formData.isEcommerce && formData.itemId && formData.warehouse && !editingId) {
+            if (isEcommerce && formData.itemId && formData.warehouse && !editingId) {
                 const item = inventory.find(i => i.id === formData.itemId);
                 if (item) {
                     const currentStock = item.stocksByWarehouse?.[formData.warehouse] || 0;
-                    
                     if (currentStock >= formData.quantity) {
-                        const updatedStocks = {
-                            ...item.stocksByWarehouse,
-                            [formData.warehouse]: currentStock - formData.quantity
-                        };
-                        
+                        const updatedStocks = { ...item.stocksByWarehouse, [formData.warehouse]: currentStock - formData.quantity };
                         await updateItem(item.id, { ...item, stocksByWarehouse: updatedStocks });
-                    } else {
-                        throw new Error(`¡Stock insuficiente en ${formData.warehouse}! Stock actual: ${currentStock}`);
-                    }
+                    } else throw new Error(`¡Stock insuficiente en ${formData.warehouse}!`);
                 }
             }
         })();
 
-        toast.promise(promise, {
-            loading: 'Procesando...',
-            success: () => {
-                setIsModalOpen(false);
-                setIsEcommerceModalOpen(false);
-                resetForm();
-                return 'Registro exitoso y stock actualizado';
-            },
-            error: (err) => `Error: ${err.message}`
-        });
+        toast.promise(promise, { loading: 'Guardando...', success: () => { setIsModalOpen(false); setIsEcommerceModalOpen(false); resetForm(); return 'Registro Guardado'; }, error: (err) => `Error: ${err.message}` });
     };
 
-    const confirmDelete = (mov) => {
-        setItemToDelete(mov);
-        setIsDeleteModalOpen(true);
-    };
+    const confirmDelete = (mov) => { setItemToDelete(mov); setIsDeleteModalOpen(true); };
+    const handleDelete = async () => { if (!itemToDelete) return; await deleteMovement(itemToDelete.id); setIsDeleteModalOpen(false); setItemToDelete(null); toast.success('Registro eliminado'); };
+    const handleEdit = (mov) => { setEditingId(mov.id); setFormData(mov); if (mov.isEcommerce) { setIsEcommerceModalOpen(true); const item = inventory.find(i => i.id === mov.itemId); if(item) setSelectedItemName(item.name); } else { setIsModalOpen(true); } };
+    const resetForm = () => { setFormData({ date: new Date().toISOString().split('T')[0], type: "income", docType: "39", docNumber: "", description: "", category: "VENTA", netAmount: 0, taxAmount: 0, totalAmount: 0, isTaxable: true, paymentMethod: "Mercado Pago", receivedAmount: 0, commissionAmount: 0, isEcommerce: false, itemId: "", warehouse: "Mercado Libre", quantity: 1, status: "confirmed", deliveryBy: "", docUrl: "" }); setEditingId(null); setItemSearchTerm(""); setSelectedItemName(""); setShowItemResults(false); };
+    const updateAmounts = (value, field) => { let total = formData.totalAmount; let received = formData.receivedAmount; if (field === 'total') total = parseFloat(value) || 0; else if (field === 'received') received = parseFloat(value) || 0; const commission = total - received; let net = total; let tax = 0; if (formData.isTaxable && ["33", "39", "VOU"].includes(formData.docType)) { net = Math.round(total / 1.19); tax = total - net; } setFormData(prev => ({ ...prev, totalAmount: total, receivedAmount: received, commissionAmount: commission, netAmount: net, taxAmount: tax })); };
 
-    const handleDelete = async () => {
-        if (!itemToDelete) return;
-        const promise = deleteMovement(itemToDelete.id);
-        toast.promise(promise, {
-            loading: 'Eliminando registro...',
-            success: () => {
-                setIsDeleteModalOpen(false);
-                setItemToDelete(null);
-                return 'Registro eliminado';
-            },
-            error: (err) => `Error: ${err.message}`
-        });
-    };
-
-    const handleEdit = (mov) => {
-        setEditingId(mov.id);
-        setFormData(mov);
-        if (mov.isEcommerce) {
-            setIsEcommerceModalOpen(true);
-            const item = inventory.find(i => i.id === mov.itemId);
-            if(item) setSelectedItemName(item.name);
-        } else {
-            setIsModalOpen(true);
-        }
-    };
-
-    const resetForm = () => {
-        setFormData({
-            date: new Date().toISOString().split('T')[0],
-            type: "income",
-            docType: "39",
-            docNumber: "",
-            description: "",
-            category: "VENTA",
-            netAmount: 0,
-            taxAmount: 0,
-            totalAmount: 0,
-            isTaxable: true,
-            paymentMethod: "Mercado Pago",
-            receivedAmount: 0,
-            commissionAmount: 0,
-            isEcommerce: false,
-            itemId: "",
-            warehouse: "Bodega Local",
-            quantity: 1
-        });
-        setEditingId(null);
-        setItemSearchTerm("");
-        setSelectedItemName("");
-        setShowItemResults(false);
-    };
-
-    const updateAmounts = (value, field) => {
-        let total = formData.totalAmount;     
-        let received = formData.receivedAmount; 
-        
-        if (field === 'total') {
-            total = parseFloat(value) || 0;
-        } else if (field === 'received') {
-            received = parseFloat(value) || 0;
-        }
-
-        const commission = total - received;
-
-        let net = total;
-        let tax = 0;
-        if (formData.isTaxable && ["33", "39", "VOU"].includes(formData.docType)) {
-            net = Math.round(total / 1.19);
-            tax = total - net;
-        }
-
-        setFormData(prev => ({
-            ...prev,
-            totalAmount: total,
-            receivedAmount: received,
-            commissionAmount: commission,
-            netAmount: net,
-            taxAmount: tax
-        }));
-    };
-
-    const monthMovements = movements.filter(m => !filterMonth || m.date.startsWith(filterMonth));
-    const totalIncome = monthMovements.filter(m => m.type === "income").reduce((acc, curr) => acc + Number(curr.totalAmount), 0);
-    const totalExpense = monthMovements.filter(m => m.type === "expense").reduce((acc, curr) => acc + Number(curr.totalAmount), 0);
-    const ivaDebito = monthMovements.filter(m => m.type === "income").reduce((acc, curr) => acc + Number(curr.taxAmount || 0), 0);
-    const ivaCredito = monthMovements.filter(m => m.type === "expense").reduce((acc, curr) => acc + Number(curr.taxAmount || 0), 0);
-    const netIva = ivaDebito - ivaCredito;
-    const balance = totalIncome - totalExpense;
-
-    const getBalanceByMethod = (method) => {
-        const income = monthMovements.filter(m => m.type === "income" && m.paymentMethod === method).reduce((acc, curr) => acc + Number(curr.totalAmount), 0);
-        const expense = monthMovements.filter(m => m.type === "expense" && m.paymentMethod === method).reduce((acc, curr) => acc + Number(curr.totalAmount), 0);
-        return income - expense;
-    };
-
-    const cashBalance = getBalanceByMethod('Efectivo');
-    const bancoBalance = getBalanceByMethod('BancoChile');
-    const mercadoBalance = getBalanceByMethod('Mercado Pago');
-
-    const filteredMovements = monthMovements.filter(m => {
-        const matchesType = filterType === "Todos" || (filterType === "Ingresos" ? m.type === "income" : m.type === "expense");
-        const matchesSearch = (m.description || "").toLowerCase().includes(searchTerm.toLowerCase()) || (m.docNumber || "").includes(searchTerm);
-        return matchesType && matchesSearch;
-    });
+    // --- CÁLCULOS ---
+    const safeMovements = Array.isArray(movements) ? movements : [];
+    const monthMovements = safeMovements.filter(m => !filterMonth || m.date.startsWith(filterMonth));
+    const totalExpense = monthMovements.filter(m => m.type === "expense").reduce((acc, curr) => acc + Number(curr.totalAmount || 0), 0);
+    const incomeConfirmed = monthMovements.filter(m => m.type === "income" && (m.status === 'confirmed' || !m.status)).reduce((acc, curr) => acc + Number(curr.totalAmount || 0), 0);
+    const availableBalance = incomeConfirmed - totalExpense;
+    const pendingBalance = monthMovements.filter(m => m.type === "income" && m.status === 'pending').reduce((acc, curr) => acc + Number(curr.totalAmount || 0), 0);
+    const netIva = monthMovements.filter(m => m.type === "income").reduce((acc, curr) => acc + Number(curr.taxAmount || 0), 0) - monthMovements.filter(m => m.type === "expense").reduce((acc, curr) => acc + Number(curr.taxAmount || 0), 0);
+    const getBalanceByMethod = (method) => { const income = monthMovements.filter(m => m.type === "income" && m.paymentMethod === method && (m.status === 'confirmed' || !m.status)).reduce((acc, curr) => acc + Number(curr.totalAmount || 0), 0); const expense = monthMovements.filter(m => m.type === "expense" && m.paymentMethod === method).reduce((acc, curr) => acc + Number(curr.totalAmount || 0), 0); return income - expense; };
+    const cashBalance = getBalanceByMethod('Efectivo'); const bancoBalance = getBalanceByMethod('BancoChile'); const mercadoBalance = getBalanceByMethod('Mercado Pago');
+    const filteredMovements = monthMovements.filter(m => { const matchesType = filterType === "Todos" || (filterType === "Ingresos" ? m.type === "income" : m.type === "expense"); const matchesSearch = (m.description || "").toLowerCase().includes(searchTerm.toLowerCase()) || (m.docNumber || "").includes(searchTerm); return matchesType && matchesSearch; });
 
     if (loading) return <div className="p-8 text-center text-slate-500 animate-pulse">Cargando movimientos...</div>;
 
     return (
         <div className="space-y-6 animate-fadeIn pb-20">
-            {/* Header */}
-            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                <div>
-                    <h1 className="text-3xl font-black bg-clip-text text-transparent bg-brand-gradient italic uppercase tracking-tighter">
-                        Flujo de Caja
-                    </h1>
-                    <p className="text-slate-400 font-medium flex items-center gap-2">
-                        <Landmark size={14} className="text-brand-cyan" />
-                        Control Financiero
-                    </p>
-                </div>
-                <div className="flex gap-3 w-full md:w-auto">
-                    <button
-                        onClick={() => {
-                            resetForm();
-                            setIsEcommerceModalOpen(true);
-                            setFormData(prev => ({ ...prev, isEcommerce: true, category: 'VENTA', paymentMethod: 'Mercado Pago', docType: '39' }));
-                        }}
-                        className="flex-1 md:flex-none bg-slate-800 hover:bg-slate-700 transition-all text-white px-6 py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 border border-white/10 shadow-lg"
-                    >
-                        <ShoppingBag size={20} className="text-brand-cyan" />
-                        Venta E-com
-                    </button>
-                    <button
-                        onClick={() => { resetForm(); setIsModalOpen(true); }}
-                        className="flex-1 md:flex-none bg-brand-gradient hover:opacity-90 transition-all text-white px-6 py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-brand-purple/20 hover:scale-105"
-                    >
-                        <Plus size={20} />
-                        Movimiento
-                    </button>
-                </div>
-            </div>
-
-            {/* Stats Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                <StatCard title="Ingresos Totales" value={`$${totalIncome.toLocaleString()}`} icon={<ArrowUpCircle size={24} className="text-emerald-400" />} />
-                <StatCard title="Egresos Totales" value={`$${totalExpense.toLocaleString()}`} icon={<ArrowDownCircle size={24} className="text-rose-400" />} />
-                <StatCard title="IVA Neto F29" value={`$${netIva.toLocaleString()}`} icon={<Calculator size={24} className="text-brand-cyan" />} isSpecial />
-                <StatCard title="Balance Operativo" value={`$${balance.toLocaleString()}`} icon={<DollarSign size={24} className="text-brand-purple" />} />
-            </div>
-
-            {/* Payment Methods Breakdown */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                {[
-                    { label: 'Efectivo', val: cashBalance, icon: <Banknote size={24} />, col: 'text-emerald-400', bg: 'bg-emerald-500/10' },
-                    { label: 'Banco Chile', val: bancoBalance, icon: <Landmark size={24} />, col: 'text-brand-purple', bg: 'bg-brand-purple/10' },
-                    { label: 'Mercado Pago', val: mercadoBalance, icon: <CreditCard size={24} />, col: 'text-brand-cyan', bg: 'bg-brand-cyan/10' }
-                ].map((b, i) => (
-                    <div key={i} className="bg-slate-900/40 border border-white/5 p-5 rounded-2xl flex items-center gap-4">
-                        <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${b.bg} ${b.col}`}>{b.icon}</div>
-                        <div>
-                            <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">{b.label}</p>
-                            <h3 className="text-xl font-black text-white italic tracking-tighter">${b.val.toLocaleString()}</h3>
-                        </div>
-                    </div>
-                ))}
-            </div>
-
-            {/* Filters */}
-            <div className="bg-slate-900/50 backdrop-blur-xl p-4 rounded-2xl border border-white/5 flex flex-col md:flex-row gap-4 justify-between">
-                <div className="flex gap-2 items-center">
-                    {["Todos", "Ingresos", "Egresos"].map((type) => (
-                        <button key={type} onClick={() => setFilterType(type)} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase ${filterType === type ? "bg-white/10 text-white" : "text-slate-500 hover:text-white"}`}>{type}</button>
-                    ))}
-                    <div className="w-px h-6 bg-white/10 mx-2"></div>
-                    <div className="flex items-center gap-2 bg-slate-950/50 border border-white/10 rounded-xl px-3 py-1.5">
-                        <Calendar size={14} className="text-slate-500" />
-                        <input type="month" className="bg-transparent border-none text-xs font-bold text-white outline-none uppercase" value={filterMonth} onChange={(e) => setFilterMonth(e.target.value)} />
-                    </div>
-                </div>
-                <div className="relative w-full md:w-80">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
-                    <input type="text" placeholder="Buscar..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full bg-slate-800/50 border border-white/10 rounded-xl py-2 pl-10 pr-4 text-slate-200 outline-none focus:border-brand-purple/50" />
-                </div>
-            </div>
+            {/* Header, Stats, Breakdown, Filters (Sin cambios) */}
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4"><div><h1 className="text-3xl font-black bg-clip-text text-transparent bg-brand-gradient italic uppercase tracking-tighter">Flujo de Caja</h1><p className="text-slate-400 font-medium flex items-center gap-2"><Landmark size={14} className="text-brand-cyan" /> Control Financiero</p></div><div className="flex gap-3 w-full md:w-auto"><button onClick={() => { resetForm(); setIsEcommerceModalOpen(true); setFormData(prev => ({ ...prev, isEcommerce: true, category: 'VENTA', paymentMethod: 'Mercado Pago', docType: '39', warehouse: 'Mercado Libre' })); }} className="flex-1 md:flex-none bg-slate-800 hover:bg-slate-700 transition-all text-white px-6 py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 border border-white/10 shadow-lg"><ShoppingBag size={20} className="text-brand-cyan" /> Venta E-com</button><button onClick={() => { resetForm(); setIsModalOpen(true); }} className="flex-1 md:flex-none bg-brand-gradient hover:opacity-90 transition-all text-white px-6 py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-brand-purple/20 hover:scale-105"><Plus size={20} /> Movimiento</button></div></div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4"><StatCard title="Saldo Disponible (Real)" value={`$${Number(availableBalance || 0).toLocaleString()}`} icon={<CheckCircle size={24} className="text-emerald-400" />} color="text-emerald-400" borderColor="border-emerald-500/30" bgColor="bg-emerald-500/5" /><StatCard title="Saldo Retenido (En Tránsito)" value={`$${Number(pendingBalance || 0).toLocaleString()}`} icon={<Clock size={24} className="text-amber-400" />} color="text-amber-400" borderColor="border-amber-500/30" bgColor="bg-amber-500/5" /><StatCard title="Egresos Totales" value={`$${Number(totalExpense || 0).toLocaleString()}`} icon={<ArrowDownCircle size={24} className="text-rose-400" />} /><StatCard title="IVA Neto F29" value={`$${Number(netIva || 0).toLocaleString()}`} icon={<Calculator size={24} className="text-brand-cyan" />} isSpecial /></div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">{[{ label: 'Efectivo', val: cashBalance, icon: <Banknote size={24} />, col: 'text-emerald-400', bg: 'bg-emerald-500/10' }, { label: 'Banco Chile', val: bancoBalance, icon: <Landmark size={24} />, col: 'text-brand-purple', bg: 'bg-brand-purple/10' }, { label: 'Mercado Pago (Disp.)', val: mercadoBalance, icon: <CreditCard size={24} />, col: 'text-brand-cyan', bg: 'bg-brand-cyan/10' }].map((b, i) => (<div key={i} className="bg-slate-900/40 border border-white/5 p-5 rounded-2xl flex items-center gap-4"><div className={`w-12 h-12 rounded-xl flex items-center justify-center ${b.bg} ${b.col}`}>{b.icon}</div><div><p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">{b.label}</p><h3 className="text-xl font-black text-white italic tracking-tighter">${Number(b.val || 0).toLocaleString()}</h3></div></div>))}</div>
+            <div className="bg-slate-900/50 backdrop-blur-xl p-4 rounded-2xl border border-white/5 flex flex-col md:flex-row gap-4 justify-between"><div className="flex gap-2 items-center">{["Todos", "Ingresos", "Egresos"].map((type) => (<button key={type} onClick={() => setFilterType(type)} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase ${filterType === type ? "bg-white/10 text-white" : "text-slate-500 hover:text-white"}`}>{type}</button>))}<div className="w-px h-6 bg-white/10 mx-2"></div><div className="flex items-center gap-2 bg-slate-950/50 border border-white/10 rounded-xl px-3 py-1.5"><Calendar size={14} className="text-slate-500" /><input type="month" className="bg-transparent border-none text-xs font-bold text-white outline-none uppercase" value={filterMonth} onChange={(e) => setFilterMonth(e.target.value)} /></div></div><div className="relative w-full md:w-80"><Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={18} /><input type="text" placeholder="Buscar..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full bg-slate-800/50 border border-white/10 rounded-xl py-2 pl-10 pr-4 text-slate-200 outline-none focus:border-brand-purple/50" /></div></div>
 
             {/* Table */}
             <div className="bg-slate-900/50 rounded-2xl border border-white/5 overflow-hidden shadow-2xl">
@@ -340,7 +201,8 @@ const FlujoCaja = () => {
                     <thead className="bg-slate-950/50 text-[10px] uppercase font-black tracking-[0.2em] text-slate-500 border-b border-white/5">
                         <tr>
                             <th className="px-6 py-4">Fecha</th>
-                            <th className="px-6 py-4">Documento</th>
+                            <th className="px-6 py-4">Estado</th>
+                            <th className="px-6 py-4">Documento</th> {/* 👈 COLUMNA DESTACADA */}
                             <th className="px-6 py-4">Glosa</th>
                             <th className="px-6 py-4 text-center">Cat.</th>
                             <th className="px-6 py-4">Pago</th>
@@ -349,231 +211,106 @@ const FlujoCaja = () => {
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-white/5">
-                        {filteredMovements.map((mov) => (
-                            <tr key={mov.id} className="hover:bg-white/[0.02] transition-colors group">
-                                <td className="px-6 py-4 text-slate-400 text-xs font-mono">{mov.date}</td>
-                                <td className="px-6 py-4">
-                                    <div className="flex items-center gap-2">
-                                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${mov.type === 'income' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'}`}>
-                                            <FileText size={14} />
+                        {filteredMovements.map((mov) => {
+                            const isPending = mov.status === 'pending';
+                            const docLabel = DOCUMENT_TYPES.find(d => d.id === mov.docType)?.label?.split(' ')[0] || mov.docType;
+                            
+                            return (
+                                <tr key={mov.id} className="hover:bg-white/[0.02] transition-colors group">
+                                    <td className="px-6 py-4 text-slate-400 text-xs font-mono">{mov.date}</td>
+                                    
+                                    {/* Estado */}
+                                    <td className="px-6 py-4">{isPending ? (<button onClick={() => handleReleaseFunds(mov)} className="flex items-center gap-1 bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-1 rounded-lg text-[10px] font-bold uppercase hover:bg-amber-500/20 transition-all group/btn" title="Clic para liberar"><Lock size={10} className="group-hover/btn:hidden" /><Unlock size={10} className="hidden group-hover/btn:block" /><span>Retenido</span></button>) : (<div className="flex items-center gap-1 text-emerald-500"><CheckCircle size={14} /><span className="text-[10px] font-bold uppercase">OK</span></div>)}</td>
+                                    
+                                    {/* 🔥 COLUMNA DOCUMENTO (REDDISEÑADA) 🔥 */}
+                                    <td className="px-6 py-4">
+                                        <div className="flex flex-col">
+                                            {/* Tipo de Doc (Pequeño) */}
+                                            <div className="flex items-center gap-1 mb-0.5">
+                                                <span className="text-[10px] font-bold text-brand-purple uppercase">{docLabel}</span>
+                                            </div>
+                                            {/* NÚMERO (GRANDE Y VISIBLE) */}
+                                            <span className="text-sm font-black text-white font-mono tracking-tight mb-1">
+                                                {mov.docNumber ? `#${mov.docNumber}` : 'S/N'}
+                                            </span>
+                                            
+                                            {/* Botón Acción (Ver o Subir) */}
+                                            {mov.docUrl ? (
+                                                <a href={mov.docUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-[10px] text-brand-cyan hover:text-white transition-colors w-fit">
+                                                    <Eye size={12} /> Ver PDF
+                                                </a>
+                                            ) : (
+                                                <div className="relative">
+                                                    {uploadingId === mov.id ? (
+                                                        <span className="text-[10px] text-slate-500 animate-pulse">Subiendo...</span>
+                                                    ) : (
+                                                        <label className="flex items-center gap-1 text-[10px] text-slate-500 hover:text-brand-cyan cursor-pointer w-fit transition-colors">
+                                                            <UploadCloud size={12} /> Adjuntar
+                                                            <input type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg" onChange={(e) => handleFileUpload(e, mov.id)} />
+                                                        </label>
+                                                    )}
+                                                </div>
+                                            )}
                                         </div>
-                                        <div>
-                                            <p className="text-white text-xs font-bold">{DOCUMENT_TYPES.find(d => d.id === mov.docType)?.label}</p>
-                                            <p className="text-[10px] text-slate-500 font-mono">#{mov.docNumber || 'S/N'}</p>
-                                        </div>
-                                    </div>
-                                </td>
-                                <td className="px-6 py-4 text-slate-300 text-sm">{mov.description}</td>
-                                <td className="px-6 py-4 text-center">
-                                    <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-slate-800 border border-white/5 text-slate-400">{TAX_CATEGORIES.find(c => c.id === mov.category)?.label?.split(' ')[0]}</span>
-                                </td>
-                                <td className="px-6 py-4">
-                                    <span className="text-[10px] font-bold text-slate-300 uppercase px-2 py-1 bg-slate-800/50 rounded-lg border border-white/5">{mov.paymentMethod}</span>
-                                </td>
-                                <td className="px-6 py-4 text-right">
-                                    <span className={`text-sm font-black ${mov.type === 'income' ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                        {mov.type === 'income' ? '+' : '-'} ${Number(mov.totalAmount).toLocaleString()}
-                                    </span>
-                                </td>
-                                <td className="px-6 py-4 text-right">
-                                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-all justify-end">
-                                        <button onClick={() => handleEdit(mov)} className="p-1.5 rounded-lg hover:bg-brand-cyan/10 text-slate-600 hover:text-brand-cyan"><Pencil size={14} /></button>
-                                        <button onClick={() => confirmDelete(mov)} className="p-1.5 rounded-lg hover:bg-rose-500/10 text-slate-600 hover:text-rose-500"><Trash2 size={14} /></button>
-                                    </div>
-                                </td>
-                            </tr>
-                        ))}
+                                    </td>
+
+                                    <td className="px-6 py-4 text-slate-300 text-sm max-w-xs truncate">{mov.description}{mov.deliveryBy && (<span className="block text-[9px] text-slate-500 mt-0.5 flex items-center gap-1"><Truck size={10} /> {mov.deliveryBy}</span>)}</td>
+                                    <td className="px-6 py-4 text-center"><span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-slate-800 border border-white/5 text-slate-400">{TAX_CATEGORIES.find(c => c.id === mov.category)?.label?.split(' ')[0]}</span></td>
+                                    <td className="px-6 py-4"><span className="text-[10px] font-bold text-slate-300 uppercase px-2 py-1 bg-slate-800/50 rounded-lg border border-white/5">{mov.paymentMethod}</span></td>
+                                    <td className="px-6 py-4 text-right"><span className={`text-sm font-black ${mov.type === 'income' ? 'text-emerald-400' : 'text-rose-400'}`}>{mov.type === 'income' ? '+' : '-'} ${Number(mov.totalAmount || 0).toLocaleString()}</span></td>
+                                    <td className="px-6 py-4 text-right"><div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-all justify-end"><button onClick={() => handleEdit(mov)} className="p-1.5 rounded-lg hover:bg-brand-cyan/10 text-slate-600 hover:text-brand-cyan"><Pencil size={14} /></button><button onClick={() => confirmDelete(mov)} className="p-1.5 rounded-lg hover:bg-rose-500/10 text-slate-600 hover:text-rose-500"><Trash2 size={14} /></button></div></td>
+                                </tr>
+                            );
+                        })}
                     </tbody>
                 </table>
                 {filteredMovements.length === 0 && <div className="py-20 text-center text-slate-500 font-medium">Sin movimientos en este periodo.</div>}
             </div>
 
-            {/* Modal Estándar (Ingreso/Gasto Manual) */}
-            {isModalOpen && (
-                <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-[100] flex items-center justify-center p-4">
-                    <div className="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
-                        <div className="p-6 border-b border-white/10 flex justify-between items-center">
-                            <h2 className="text-xl font-black text-white italic uppercase">{editingId ? "Editar" : "Nuevo"} Movimiento</h2>
-                            <button onClick={() => setIsModalOpen(false)}><X className="text-slate-500 hover:text-white" /></button>
-                        </div>
-                        <div className="p-6 space-y-4 overflow-y-auto custom-scrollbar">
-                            <div className="flex gap-2 p-1 bg-slate-950 rounded-xl border border-white/5">
-                                <button onClick={() => setFormData({ ...formData, type: "income", category: "VENTA" })} className={`flex-1 py-2 rounded-lg font-bold ${formData.type === 'income' ? 'bg-emerald-500 text-white' : 'text-slate-500'}`}>Ingreso</button>
-                                <button onClick={() => setFormData({ ...formData, type: "expense", category: "MERCADERIA" })} className={`flex-1 py-2 rounded-lg font-bold ${formData.type === 'expense' ? 'bg-rose-500 text-white' : 'text-slate-500'}`}>Egreso</button>
-                            </div>
-                            <div className="grid grid-cols-2 gap-4">
-                                <div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Fecha</label><input type="date" className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={formData.date} onChange={(e) => setFormData({ ...formData, date: e.target.value })} /></div>
-                                <div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">N° Doc</label><input type="text" className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={formData.docNumber} onChange={(e) => setFormData({ ...formData, docNumber: e.target.value })} /></div>
-                            </div>
-                            <div className="grid grid-cols-2 gap-4">
-                                <div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Tipo Doc</label><select className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={formData.docType} onChange={(e) => setFormData({ ...formData, docType: e.target.value })}>{DOCUMENT_TYPES.map(d => <option key={d.id} value={d.id}>{d.label}</option>)}</select></div>
-                                <div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Categoría</label><select className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={formData.category} onChange={(e) => setFormData({ ...formData, category: e.target.value })}>{TAX_CATEGORIES.filter(c => c.type === formData.type).map(c => <option key={c.id} value={c.id}>{c.label}</option>)}</select></div>
-                            </div>
-                            <div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Glosa</label><input type="text" className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={formData.description} onChange={(e) => setFormData({ ...formData, description: e.target.value })} /></div>
-                            <div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Medio Pago</label><div className="grid grid-cols-3 gap-2">{['Efectivo', 'BancoChile', 'Mercado Pago'].map(m => <button key={m} onClick={() => setFormData({ ...formData, paymentMethod: m })} type="button" className={`py-2 rounded-lg text-[10px] font-bold border ${formData.paymentMethod === m ? 'bg-white text-slate-900' : 'bg-slate-800 text-slate-500 border-slate-700'}`}>{m}</button>)}</div></div>
-                            <div className="bg-slate-950 p-4 rounded-xl border border-white/5 space-y-4">
-                                <div className="flex justify-between items-center"><label className="text-[10px] font-bold text-slate-400 uppercase">Calcular IVA</label><input type="checkbox" checked={formData.isTaxable} onChange={(e) => { setFormData(p => ({ ...p, isTaxable: e.target.checked })); setTimeout(() => updateAmounts(formData.totalAmount, 'total'), 0); }} /></div>
-                                <div><label className="text-[10px] font-black text-brand-cyan uppercase block mb-1">Monto Total</label><input type="number" className="w-full bg-slate-900 border border-brand-cyan/30 rounded-xl p-3 text-white font-black text-xl outline-none" value={formData.totalAmount} onChange={(e) => updateAmounts(e.target.value, 'total')} /></div>
-                                <div className="flex gap-4 text-xs text-slate-500"><span>Neto: ${formData.netAmount}</span><span>IVA: ${formData.taxAmount}</span></div>
-                            </div>
-                            <button onClick={handleSave} className="w-full bg-brand-gradient py-4 rounded-xl text-white font-black uppercase tracking-widest shadow-lg hover:opacity-90">Guardar Movimiento</button>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* 🔥 MODAL E-COMMERCE 🔥 */}
+            {/* Modals are the same... reusing logic */}
+            {isModalOpen && (<div className="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-[100] flex items-center justify-center p-4"><div className="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"><div className="p-6 border-b border-white/10 flex justify-between items-center"><h2 className="text-xl font-black text-white italic uppercase">{editingId ? "Editar" : "Nuevo"} Movimiento</h2><button onClick={() => setIsModalOpen(false)}><X className="text-slate-500 hover:text-white" /></button></div><div className="p-6 space-y-4 overflow-y-auto custom-scrollbar"><div className="flex gap-2 p-1 bg-slate-950 rounded-xl border border-white/5"><button onClick={() => setFormData({ ...formData, type: "income", category: "VENTA" })} className={`flex-1 py-2 rounded-lg font-bold ${formData.type === 'income' ? 'bg-emerald-500 text-white' : 'text-slate-500'}`}>Ingreso</button><button onClick={() => setFormData({ ...formData, type: "expense", category: "MERCADERIA" })} className={`flex-1 py-2 rounded-lg font-bold ${formData.type === 'expense' ? 'bg-rose-500 text-white' : 'text-slate-500'}`}>Egreso</button></div><div className="grid grid-cols-2 gap-4"><div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Fecha</label><input type="date" className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={formData.date} onChange={(e) => setFormData({ ...formData, date: e.target.value })} /></div><div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">N° Doc</label><input type="text" className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={formData.docNumber} onChange={(e) => setFormData({ ...formData, docNumber: e.target.value })} /></div></div><div className="grid grid-cols-2 gap-4"><div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Tipo Doc</label><select className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={formData.docType} onChange={(e) => setFormData({ ...formData, docType: e.target.value })}>{DOCUMENT_TYPES.map(d => <option key={d.id} value={d.id}>{d.label}</option>)}</select></div><div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Categoría</label><select className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={formData.category} onChange={(e) => setFormData({ ...formData, category: e.target.value })}>{TAX_CATEGORIES.filter(c => c.type === formData.type).map(c => <option key={c.id} value={c.id}>{c.label}</option>)}</select></div></div><div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Glosa</label><input type="text" className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={formData.description} onChange={(e) => setFormData({ ...formData, description: e.target.value })} /></div><div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Medio Pago</label><div className="grid grid-cols-3 gap-2">{['Efectivo', 'BancoChile', 'Mercado Pago'].map(m => <button key={m} onClick={() => setFormData({ ...formData, paymentMethod: m })} type="button" className={`py-2 rounded-lg text-[10px] font-bold border ${formData.paymentMethod === m ? 'bg-white text-slate-900' : 'bg-slate-800 text-slate-500 border-slate-700'}`}>{m}</button>)}</div></div><div className="bg-slate-950 p-4 rounded-xl border border-white/5 space-y-4"><div className="flex justify-between items-center"><label className="text-[10px] font-bold text-slate-400 uppercase">Calcular IVA</label><input type="checkbox" checked={formData.isTaxable} onChange={(e) => { setFormData(p => ({ ...p, isTaxable: e.target.checked })); setTimeout(() => updateAmounts(formData.totalAmount, 'total'), 0); }} /></div><div><label className="text-[10px] font-black text-brand-cyan uppercase block mb-1">Monto Total</label><input type="number" className="w-full bg-slate-900 border border-brand-cyan/30 rounded-xl p-3 text-white font-black text-xl outline-none" value={formData.totalAmount} onChange={(e) => updateAmounts(e.target.value, 'total')} /></div><div className="flex gap-4 text-xs text-slate-500"><span>Neto: ${formData.netAmount}</span><span>IVA: ${formData.taxAmount}</span></div></div><button onClick={handleSave} className="w-full bg-brand-gradient py-4 rounded-xl text-white font-black uppercase tracking-widest shadow-lg hover:opacity-90">Guardar Movimiento</button></div></div></div>)}
             {isEcommerceModalOpen && (
                 <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-[100] flex items-center justify-center p-4">
                     <div className="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col max-h-[95vh] border-t-brand-cyan border-t-4">
-                        <div className="p-6 border-b border-white/10 flex justify-between items-center bg-slate-900 sticky top-0 z-10">
-                            <div>
-                                <h2 className="text-xl font-black text-white italic uppercase">Conciliación E-commerce</h2>
-                                <p className="text-[10px] text-slate-400">Salida de Stock + Ingreso de Dinero</p>
-                            </div>
-                            <button onClick={() => setIsEcommerceModalOpen(false)}><X className="text-slate-500 hover:text-white" /></button>
-                        </div>
-                        
+                        <div className="p-6 border-b border-white/10 flex justify-between items-center bg-slate-900 sticky top-0 z-10"><div><h2 className="text-xl font-black text-white italic uppercase">Conciliación E-commerce</h2><p className="text-[10px] text-slate-400">Salida de Stock + Ingreso de Dinero (Retenido)</p></div><button onClick={() => setIsEcommerceModalOpen(false)}><X className="text-slate-500 hover:text-white" /></button></div>
                         <div className="p-6 space-y-5 overflow-y-auto custom-scrollbar">
-                            
-                            {/* 1. SELECCIÓN DE PRODUCTO */}
                             <div className="relative">
-                                <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 flex items-center gap-2">
-                                    <PackageMinus size={12} className="text-rose-400" /> 
-                                    1. Producto vendido (Salida Stock)
-                                </label>
-                                {selectedItemName ? (
-                                    <div className="flex gap-2">
-                                        <div className="w-full bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 text-emerald-400 font-bold text-sm">
-                                            {selectedItemName}
-                                        </div>
-                                        <button onClick={() => { setSelectedItemName(""); setItemSearchTerm(""); setFormData(p => ({...p, itemId: ""})); }} className="bg-slate-800 p-3 rounded-xl text-slate-400 hover:text-white border border-white/10"><Trash2 size={16} /></button>
-                                    </div>
-                                ) : (
-                                    <>
-                                        <input type="text" className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-brand-cyan" placeholder="Buscar producto..." value={itemSearchTerm} onChange={(e) => { setItemSearchTerm(e.target.value); setShowItemResults(true); }} />
-                                        {showItemResults && (
-                                            <div className="absolute z-20 w-full bg-slate-800 border border-white/10 rounded-xl mt-1 max-h-40 overflow-y-auto shadow-xl">
-                                                {inventory.filter(i => i.name.toLowerCase().includes(itemSearchTerm.toLowerCase())).map(item => (
-                                                    <div key={item.id} onClick={() => { 
-                                                        setFormData(prev => ({ ...prev, itemId: item.id, description: `Venta Ecom: ${item.name}`, totalAmount: item.price_sell })); 
-                                                        setSelectedItemName(item.name); 
-                                                        updateAmounts(item.price_sell, 'total'); 
-                                                        setShowItemResults(false); 
-                                                    }} className="p-3 hover:bg-white/5 cursor-pointer text-sm text-white border-b border-white/5 flex justify-between">
-                                                        <span>{item.name}</span>
-                                                        <span className="text-brand-purple font-bold">${item.price_sell}</span>
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        )}
-                                    </>
-                                )}
+                                <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 flex items-center gap-2"><PackageMinus size={12} className="text-rose-400" /> 1. Producto vendido (Salida Stock)</label>
+                                {selectedItemName ? (<div className="flex gap-2"><div className="w-full bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 text-emerald-400 font-bold text-sm">{selectedItemName}</div><button onClick={() => { setSelectedItemName(""); setItemSearchTerm(""); setFormData(p => ({...p, itemId: ""})); }} className="bg-slate-800 p-3 rounded-xl text-slate-400 hover:text-white border border-white/10"><Trash2 size={16} /></button></div>) : (<><input type="text" className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-brand-cyan" placeholder="Buscar producto..." value={itemSearchTerm} onChange={(e) => { setItemSearchTerm(e.target.value); setShowItemResults(true); }} />{showItemResults && (<div className="absolute z-20 w-full bg-slate-800 border border-white/10 rounded-xl mt-1 max-h-40 overflow-y-auto shadow-xl">{inventory.filter(i => i.name.toLowerCase().includes(itemSearchTerm.toLowerCase())).map(item => (<div key={item.id} onClick={() => { setFormData(prev => ({ ...prev, itemId: item.id, description: `Venta Ecom: ${item.name}`, totalAmount: item.price_sell })); setSelectedItemName(item.name); updateAmounts(item.price_sell, 'total'); setShowItemResults(false); }} className="p-3 hover:bg-white/5 cursor-pointer text-sm text-white border-b border-white/5 flex justify-between"><span>{item.name}</span><span className="text-brand-purple font-bold">${item.price_sell}</span></div>))}</div>)}</>)}
+                            </div>
+                            <div className="grid grid-cols-2 gap-4"><div><label className="text-[10px] font-bold text-slate-500 uppercase mb-1 flex items-center gap-2"><Store size={12} /> Descontar de</label><select className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={formData.warehouse} onChange={(e) => setFormData({ ...formData, warehouse: e.target.value })}>{WAREHOUSES.map(w => <option key={w} value={w}>{w}</option>)}</select></div><div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Cantidad</label><input type="number" className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none text-center font-mono" value={formData.quantity} onChange={(e) => setFormData({ ...formData, quantity: parseInt(e.target.value) })} /></div></div>
+                            <div className="bg-slate-950 p-5 rounded-2xl border border-white/5 relative overflow-hidden"><div className="absolute top-0 right-0 p-2 opacity-10"><Calculator size={100} className="text-white" /></div><label className="text-[10px] font-bold text-slate-500 uppercase mb-3 flex items-center gap-2 relative z-10"><DollarSign size={12} /> 2. Conciliación Financiera</label><div className="space-y-3 relative z-10"><div className="flex justify-between items-center"><label className="text-xs text-slate-400">Precio Venta (Cliente)</label><div className="flex items-center w-40 bg-slate-900 border border-slate-700 rounded-lg px-2"><span className="text-slate-500 mr-1">$</span><input type="number" className="w-full bg-transparent p-2 text-right text-white font-bold outline-none" value={formData.totalAmount} onChange={(e) => updateAmounts(e.target.value, 'total')} /></div></div><div className="flex justify-between items-center"><label className="text-xs text-brand-cyan font-bold">Monto Recibido (Banco)</label><div className="flex items-center w-40 bg-slate-900 border border-brand-cyan/50 rounded-lg px-2 shadow-[0_0_10px_rgba(6,182,212,0.1)]"><span className="text-brand-cyan mr-1">$</span><input type="number" className="w-full bg-transparent p-2 text-right text-brand-cyan font-black outline-none" value={formData.receivedAmount} onChange={(e) => updateAmounts(e.target.value, 'received')} /></div></div><div className="h-px bg-white/10 my-2"></div><div className="flex justify-between items-center"><label className="text-xs text-rose-400 font-bold">Comisión / Costo Envío</label><div className="text-right font-mono text-rose-400 font-bold">- ${Number(formData.commissionAmount || 0).toLocaleString()}</div></div></div></div>
+                            <div className="grid grid-cols-2 gap-4"><div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Medio Pago</label><select className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={formData.paymentMethod} onChange={(e) => setFormData({ ...formData, paymentMethod: e.target.value })}><option value="Mercado Pago">Mercado Pago</option><option value="BancoChile">Banco Chile</option><option value="Webpay">Webpay</option></select></div><div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">N° Orden/Doc</label><input type="text" className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={formData.docNumber} onChange={(e) => setFormData({ ...formData, docNumber: e.target.value })} placeholder="Ej: #12345" /></div></div>
+                            
+                            {/* 🔥 NUEVO CAMPO: Delivery realizado por 🔥 */}
+                            <div>
+                                <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1 flex items-center gap-2"><Truck size={12} /> Delivery realizado por</label>
+                                <select className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={formData.deliveryBy} onChange={(e) => setFormData({ ...formData, deliveryBy: e.target.value })}>
+                                    <option value="">-- Seleccionar Técnico --</option>
+                                    {technicians.map((t, idx) => <option key={idx} value={t}>{t}</option>)}
+                                </select>
                             </div>
 
-                            {/* 2. ORIGEN DEL STOCK */}
-                            <div className="grid grid-cols-2 gap-4">
-                                <div>
-                                    <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 flex items-center gap-2"><Store size={12} /> Descontar de</label>
-                                    <select className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={formData.warehouse} onChange={(e) => setFormData({ ...formData, warehouse: e.target.value })}>
-                                        {WAREHOUSES.map(w => <option key={w} value={w}>{w}</option>)}
-                                    </select>
-                                </div>
-                                <div>
-                                    <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Cantidad</label>
-                                    <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none text-center font-mono" value={formData.quantity} onChange={(e) => setFormData({ ...formData, quantity: parseInt(e.target.value) })} />
-                                </div>
-                            </div>
-
-                            {/* 3. RECUADRO DE CÁLCULO */}
-                            <div className="bg-slate-950 p-5 rounded-2xl border border-white/5 relative overflow-hidden">
-                                <div className="absolute top-0 right-0 p-2 opacity-10"><Calculator size={100} className="text-white" /></div>
-                                <label className="text-[10px] font-bold text-slate-500 uppercase mb-3 flex items-center gap-2 relative z-10"><DollarSign size={12} /> 2. Conciliación Financiera</label>
-                                
-                                <div className="space-y-3 relative z-10">
-                                    {/* PRECIO VENTA */}
-                                    <div className="flex justify-between items-center">
-                                        <label className="text-xs text-slate-400">Precio Venta (Cliente)</label>
-                                        <div className="flex items-center w-40 bg-slate-900 border border-slate-700 rounded-lg px-2">
-                                            <span className="text-slate-500 mr-1">$</span>
-                                            <input type="number" className="w-full bg-transparent p-2 text-right text-white font-bold outline-none" value={formData.totalAmount} onChange={(e) => updateAmounts(e.target.value, 'total')} />
-                                        </div>
-                                    </div>
-
-                                    {/* MONTO RECIBIDO */}
-                                    <div className="flex justify-between items-center">
-                                        <label className="text-xs text-brand-cyan font-bold">Monto Recibido (Banco)</label>
-                                        <div className="flex items-center w-40 bg-slate-900 border border-brand-cyan/50 rounded-lg px-2 shadow-[0_0_10px_rgba(6,182,212,0.1)]">
-                                            <span className="text-brand-cyan mr-1">$</span>
-                                            <input type="number" className="w-full bg-transparent p-2 text-right text-brand-cyan font-black outline-none" value={formData.receivedAmount} onChange={(e) => updateAmounts(e.target.value, 'received')} />
-                                        </div>
-                                    </div>
-
-                                    <div className="h-px bg-white/10 my-2"></div>
-
-                                    {/* DIFERENCIA (COMISIÓN) */}
-                                    <div className="flex justify-between items-center">
-                                        <label className="text-xs text-rose-400 font-bold">Comisión / Costo Envío</label>
-                                        <div className="text-right font-mono text-rose-400 font-bold">
-                                            - ${formData.commissionAmount.toLocaleString()}
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-
-                            {/* EXTRA INFO */}
-                            <div className="grid grid-cols-2 gap-4">
-                                <div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Medio Pago</label><select className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={formData.paymentMethod} onChange={(e) => setFormData({ ...formData, paymentMethod: e.target.value })}><option value="Mercado Pago">Mercado Pago</option><option value="BancoChile">Banco Chile</option><option value="Webpay">Webpay</option></select></div>
-                                <div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">N° Orden/Doc</label><input type="text" className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={formData.docNumber} onChange={(e) => setFormData({ ...formData, docNumber: e.target.value })} placeholder="Ej: #12345" /></div>
-                            </div>
-
-                            <button onClick={handleSave} className="w-full bg-brand-gradient py-4 rounded-xl text-white font-black uppercase tracking-widest shadow-lg hover:opacity-90">
-                                Confirmar Venta
-                            </button>
+                            <button onClick={handleSave} className="w-full bg-brand-gradient py-4 rounded-xl text-white font-black uppercase tracking-widest shadow-lg hover:opacity-90">Confirmar Venta</button>
                         </div>
                     </div>
                 </div>
             )}
 
-            {/* Delete Confirmation Modal */}
             {isDeleteModalOpen && (
-                <div className="fixed inset-0 bg-slate-950/95 backdrop-blur-md flex items-center justify-center z-[110] p-4">
-                    <div className="bg-slate-900 border border-red-500/30 w-full max-w-sm rounded-[2.5rem] shadow-2xl p-8 text-center animate-in fade-in zoom-in duration-300">
-                        <div className="w-16 h-16 bg-red-500/10 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4 border border-red-500/20">
-                            <AlertTriangle size={32} />
-                        </div>
-                        <h2 className="text-xl font-black text-white mb-2 uppercase italic">¿Eliminar Registro?</h2>
-                        <p className="text-slate-400 mb-8 text-xs font-medium px-4">
-                            Esta acción borrará el movimiento contable permanentemente.
-                        </p>
-                        <div className="flex gap-4">
-                            <button
-                                onClick={() => setIsDeleteModalOpen(false)}
-                                className="flex-1 bg-slate-800 text-white font-black py-4 rounded-2xl hover:bg-slate-700 transition-all uppercase text-[10px] tracking-widest"
-                            >
-                                Cancelar
-                            </button>
-                            <button
-                                onClick={handleDelete}
-                                className="flex-1 bg-red-600 text-white font-black py-4 rounded-2xl hover:bg-red-700 transition-all shadow-lg shadow-red-600/30 uppercase text-[10px] tracking-widest italic"
-                            >
-                                Sí, Eliminar
-                            </button>
-                        </div>
-                    </div>
-                </div>
+                <div className="fixed inset-0 bg-slate-950/95 backdrop-blur-md flex items-center justify-center z-[110] p-4"><div className="bg-slate-900 border border-red-500/30 w-full max-w-sm rounded-[2.5rem] shadow-2xl p-8 text-center animate-in fade-in zoom-in duration-300"><div className="w-16 h-16 bg-red-500/10 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4 border border-red-500/20"><AlertTriangle size={32} /></div><h2 className="text-xl font-black text-white mb-2 uppercase italic">¿Eliminar Registro?</h2><p className="text-slate-400 mb-8 text-xs font-medium px-4">Esta acción borrará el movimiento contable permanentemente.</p><div className="flex gap-4"><button onClick={() => setIsDeleteModalOpen(false)} className="flex-1 bg-slate-800 text-white font-black py-4 rounded-2xl hover:bg-slate-700 transition-all uppercase text-[10px] tracking-widest">Cancelar</button><button onClick={handleDelete} className="flex-1 bg-red-600 text-white font-black py-4 rounded-2xl hover:bg-red-700 transition-all shadow-lg shadow-red-600/30 uppercase text-[10px] tracking-widest italic">Sí, Eliminar</button></div></div></div>
             )}
         </div>
     );
 };
 
-// Stateless Components
-const StatCard = ({ title, value, icon, isSpecial }) => (
-    <div className={`p-5 rounded-2xl border flex items-center gap-4 ${isSpecial ? 'bg-brand-purple/10 border-brand-purple/50' : 'bg-slate-900/50 border-white/5'}`}>
-        <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${isSpecial ? 'bg-brand-purple text-white' : 'bg-slate-800 text-slate-400'}`}>{icon}</div>
+// Stateless Components (StatsCard se mantiene igual)
+const StatCard = ({ title, value, icon, isSpecial, color, borderColor, bgColor }) => (
+    <div className={`p-5 rounded-2xl border flex items-center gap-4 ${isSpecial ? 'bg-brand-purple/10 border-brand-purple/50' : (bgColor || 'bg-slate-900/50')} ${borderColor || 'border-white/5'}`}>
+        <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${isSpecial ? 'bg-brand-purple text-white' : 'bg-slate-800 text-slate-400'} ${color && !isSpecial ? color : ''}`}>{icon}</div>
         <div>
             <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{title}</p>
-            <h3 className="text-2xl font-black text-white italic tracking-tighter">{value}</h3>
+            <h3 className={`text-2xl font-black italic tracking-tighter ${color || 'text-white'}`}>{value}</h3>
         </div>
     </div>
 );

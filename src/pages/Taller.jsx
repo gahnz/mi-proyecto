@@ -142,34 +142,21 @@ const Taller = () => {
         return matchesStatus && matchesSearch && matchesLocation && matchesTech;
     });
 
-    // 🔥🔥🔥 LÓGICA DE FILTRADO CORREGIDA (PARA SERVICIOS Y REPUESTOS) 🔥🔥🔥
+    // Lógica de filtrado de items
     const compatibleItems = useMemo(() => {
-        // 1. Obtenemos el equipo seleccionado
         const selectedEquipmentObj = equipmentsList.find(e => e.id === Number(formData.equipmentId));
 
-        // 2. Si NO hay equipo seleccionado, mostrar SOLO Servicios Genéricos (sin modelos asignados)
         if (!selectedEquipmentObj) {
             return inventoryItems.filter(i => i.type === 'Servicio' && (!i.compatible_models || i.compatible_models.length === 0));
         }
 
-        // 3. Normalizamos el nombre del equipo
         const fullDeviceName = `${selectedEquipmentObj.brand} ${selectedEquipmentObj.model}`.toLowerCase().trim();
 
         return inventoryItems.filter(item => {
             const models = item.compatible_models || [];
+            if (item.type === 'Servicio' && models.length === 0) return true;
+            if (item.type !== 'Servicio' && models.length === 0) return false;
 
-            // A. SERVICIOS GENÉRICOS (Sin lista de modelos) -> MOSTRAR SIEMPRE
-            if (item.type === 'Servicio' && models.length === 0) {
-                return true;
-            }
-
-            // B. REPUESTOS/CONSUMIBLES SIN LISTA -> OCULTAR (Por seguridad)
-            if (item.type !== 'Servicio' && models.length === 0) {
-                return false;
-            }
-
-            // C. ITEMS ESPECÍFICOS (Servicios Específicos o Repuestos con lista)
-            // Deben coincidir con el equipo seleccionado
             const isMatch = models.some(modelString => {
                 const cleanModelString = modelString.toLowerCase().trim();
                 return fullDeviceName.includes(cleanModelString) || cleanModelString.includes(fullDeviceName);
@@ -190,7 +177,8 @@ const Taller = () => {
         });
     };
 
-    const registerCashFlowEntry = async (orderId, customerName, total, method) => {
+    // 🔥🔥 FUNCIÓN ACTUALIZADA: Recibe docUrl y determina Status
+    const registerCashFlowEntry = async (orderId, customerName, total, method, docUrl) => {
         if (!orderId) return;
         const { data: existing } = await supabase.from('cash_flow').select('id').ilike('description', `%${orderId}%`).limit(1);
         if (existing && existing.length > 0) return;
@@ -198,6 +186,10 @@ const Taller = () => {
         const neto = Math.round(total / 1.19);
         const tax = total - neto;
         
+        // Determinar estado basado en medio de pago
+        const isDeferred = ["Mercado Pago", "Webpay"].includes(method);
+        const status = isDeferred ? 'pending' : 'confirmed';
+
         const { error } = await supabase.from('cash_flow').insert([{
             date: getChileTime().split('T')[0],
             type: 'income',
@@ -209,11 +201,13 @@ const Taller = () => {
             tax_amount: tax,
             doc_type: 'VOU',
             doc_number: orderId.replace('OT-', ''),
-            is_ecommerce: false
+            is_ecommerce: false,
+            status: status, // 👈 Guardamos el estado correcto
+            doc_url: docUrl // 👈 Guardamos el PDF de la orden si existe
         }]);
 
         if (error) console.error("Error caja:", error);
-        else toast.success(`💰 Ingreso de $${total.toLocaleString('es-CL')} registrado.`);
+        else toast.success(`💰 Ingreso de $${total.toLocaleString('es-CL')} registrado (${status === 'pending' ? 'Retenido' : 'Disponible'}).`);
     };
 
     const handleStockDeduction = async (items) => {
@@ -360,7 +354,8 @@ const Taller = () => {
                 await updateOrder(editingDbId, orderPayload);
                 
                 if (formData.status === "Finalizado y Pagado") {
-                    await registerCashFlowEntry(editingId, customerName, totalCost, formData.paymentMethod);
+                    // 🔥 Aquí pasamos el finalDocUrl a la caja
+                    await registerCashFlowEntry(editingId, customerName, totalCost, formData.paymentMethod, finalDocUrl);
                     if (shouldDeductStock) {
                         await handleStockDeduction(formData.selectedItems);
                     }
@@ -586,7 +581,6 @@ const Taller = () => {
                                         </div>
                                     </div>
 
-                                    {/* 🔥 SECCIÓN MEJORADA DE REPUESTOS (UX FIX + LOGICA) 🔥 */}
                                     <div className="lg:col-span-1 space-y-6">
                                         <div className="bg-slate-950/50 rounded-xl border border-white/5 h-full flex flex-col p-4">
                                             <label className="text-[10px] uppercase font-bold text-slate-500 mb-2 block">Repuestos / Servicios</label>
