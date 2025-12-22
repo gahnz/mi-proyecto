@@ -23,18 +23,31 @@ export const useEquipos = () => {
     setLoading(false);
   };
 
-  // Crear nuevo equipo
+  // Crear nuevo equipo (Individual)
   const addEquipo = async (equipo) => {
     const { error } = await supabase
       .from('equipment_models')
       .insert([{ 
         type: equipo.type, 
         brand: equipo.brand, 
-        model: equipo.model 
+        model: equipo.model,
+        serial: equipo.serial || "", // Agregamos serial por si acaso
+        observations: equipo.observations || "" // Agregamos observaciones
       }]);
     
     if (error) throw error;
     await fetchEquipos(); // Recargar lista
+  };
+
+  // 👇 NUEVA FUNCIÓN: CARGA MASIVA (EXCEL)
+  const createBulkEquipments = async (dataArray) => {
+    // dataArray es un array de objetos: [{ type, brand, model, serial... }]
+    const { error } = await supabase
+      .from('equipment_models')
+      .insert(dataArray);
+    
+    if (error) throw error;
+    await fetchEquipos();
   };
 
   // Editar equipo
@@ -69,6 +82,7 @@ export const useEquipos = () => {
     loading, 
     error, 
     addEquipo, 
+    createBulkEquipments, // 👈 Exportamos la nueva función
     updateEquipo, 
     deleteEquipo 
   };
