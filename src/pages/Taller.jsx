@@ -26,7 +26,7 @@ const DOC_TYPES = ["Boleta", "Factura", "Voucher Interno", "Guía de Despacho"];
 
 const Taller = () => {
     // Hooks
-    const { orders: repairs, loading, createOrder, updateOrder, deleteOrder } = useWorkOrders();
+const { orders: repairs, loading, createOrder, updateOrder, deleteOrder, refresh } = useWorkOrders();
     const { customers: clients } = useCustomers();
     const { equipments: equipmentsList } = useEquipos();
     const { inventory: inventoryItems } = useInventory();
@@ -114,6 +114,8 @@ const Taller = () => {
         }
     };
 
+    // ... (resto del código igual hasta llegar a Filter Logic)
+
     // Filter Logic
     const filteredClients = clients.filter(c => {
         const searchString = `${c.full_name || ""} ${c.business_name || ""} ${c.rut || ""}`;
@@ -128,10 +130,18 @@ const Taller = () => {
     const filteredRepairs = repairs.filter(repair => {
         let matchesStatus = true;
         if (filterStatus !== "Todos") {
-            if (filterStatus === "En Cola") matchesStatus = repair.status === "En cola";
-            else if (filterStatus === "Revisión") matchesStatus = ["Revisión del Coordinador", "Notificado y no pagado", "Pagado y no retirado", "Retirado y no pagado"].includes(repair.status);
-            else if (filterStatus === "Finalizados") matchesStatus = ["Finalizado y Pagado", "Cancelado"].includes(repair.status);
-            else matchesStatus = repair.status === filterStatus;
+            if (filterStatus === "En Cola") {
+                matchesStatus = repair.status === "En cola" || repair.status === "Trabajando";
+            } 
+            else if (filterStatus === "Revisión") {
+                matchesStatus = ["Revisión del Coordinador", "Notificado y no pagado", "Pagado y no retirado", "Retirado y no pagado"].includes(repair.status);
+            }
+            else if (filterStatus === "Finalizados") {
+                matchesStatus = ["Finalizado y Pagado", "Cancelado"].includes(repair.status);
+            }
+            else {
+                matchesStatus = repair.status === filterStatus;
+            }
         }
         
         const matchesLocation = filterLocation === "Todos" || (repair.location || "Local") === filterLocation; 
@@ -210,27 +220,55 @@ const Taller = () => {
         else toast.success(`💰 Ingreso de $${total.toLocaleString('es-CL')} registrado (${status === 'pending' ? 'Retenido' : 'Disponible'}).`);
     };
 
-    const handleStockDeduction = async (items) => {
-        if (!items || items.length === 0) return;
+    // En src/pages/Taller.jsx
+
+// Localiza handleStockDeduction en src/pages/Taller.jsx
+const handleStockDeduction = async (items) => {
+    if (!items || items.length === 0) return;
+
+    const promises = items.map(item => {
+        return supabase.rpc('update_inventory_stock', {
+            item_id: parseInt(item.id, 10), // 👈 Forzamos a entero base 10
+            quantity: parseInt(item.quantity || 1, 10),
+            warehouse_name: "Bodega Local"
+        });
+    });
+
+    try {
+        const results = await Promise.all(promises);
         
-        console.log("Iniciando descuento de stock...");
+        results.forEach((res, index) => {
+            if (res.error) {
+                console.error(`❌ Error en ${items[index].name}:`, res.error.message);
+            } else {
+                console.log(`✅ Stock restado: ${items[index].name}`);
+            }
+        });
+        
+        toast.success("Inventario actualizado");
+    } catch (error) {
+        console.error("Error en proceso de stock:", error);
+    }
+};
 
-        const promises = items.map(item => 
-            supabase.rpc('update_inventory_stock', {
-                item_id: item.id,
-                quantity: item.quantity || 1,
-                warehouse_name: "Bodega Local"
-            })
-        );
+const handleStockRestoration = async (items) => {
+    if (!items || items.length === 0) return;
+    
+    const promises = items.map(item => 
+        supabase.rpc('restore_inventory_stock', {
+            item_id: parseInt(item.id, 10),
+            quantity: parseInt(item.quantity || 1, 10),
+            warehouse_name: "Bodega Local"
+        })
+    );
 
-        try {
-            await Promise.all(promises);
-            toast.success("📦 Stock descontado de Bodega Local");
-        } catch (error) {
-            console.error("Error descontando stock:", error);
-            toast.error("Error al descontar inventario");
-        }
-    };
+    try {
+        await Promise.all(promises);
+        toast.info("📦 Stock devuelto a Bodega Local");
+    } catch (error) {
+        console.error("Error restaurando stock:", error);
+    }
+};
 
     const handleEditOrder = (repair) => {
         setEditingId(repair.id);
@@ -349,23 +387,36 @@ const Taller = () => {
             stock_deducted: shouldDeductStock ? true : formData.stockDeducted
         };
 
-        const promise = (async () => {
-            if (editingDbId) {
-                await updateOrder(editingDbId, orderPayload);
-                
-                if (formData.status === "Finalizado y Pagado") {
-                    // 🔥 Aquí pasamos el finalDocUrl a la caja
-                    await registerCashFlowEntry(editingId, customerName, totalCost, formData.paymentMethod, finalDocUrl);
-                    if (shouldDeductStock) {
-                        await handleStockDeduction(formData.selectedItems);
-                    }
-                }
-            } else {
-                await createOrder(orderPayload);
-            }
-        })();
+        // MODIFICACIÓN TEMPORAL PARA PRUEBAS
+const promise = (async () => {
+    if (editingDbId) {
+        await updateOrder(editingDbId, orderPayload);
+        
+        // LOG DE CONTROL:
+        console.log("Estado actual del formulario:", formData.status);
+        console.log("¿Ya se descontó stock antes?:", formData.stockDeducted);
 
-        toast.promise(promise, { loading: 'Guardando...', success: () => { setIsModalOpen(false); resetForm(); return 'Guardado correctamente'; }, error: (err) => `Error: ${err.message}` });
+        // Llamamos a la función sin importar el estado solo para ver los logs de los items
+        await handleStockDeduction(formData.selectedItems); 
+        
+        if (formData.status === "Finalizado y Pagado") {
+            await registerCashFlowEntry(editingId, customerName, totalCost, formData.paymentMethod, finalDocUrl);
+        }
+    } else {
+        await createOrder(orderPayload);
+    }
+})();
+
+        toast.promise(promise, { 
+    loading: 'Guardando...', 
+    success: () => { 
+        setIsModalOpen(false); 
+        resetForm(); 
+        refresh(); // <--- Agrega esta línea aquí para actualizar la lista local
+        return 'Guardado correctamente'; 
+    }, 
+    error: (err) => `Error: ${err.message}` 
+});
     };
 
     const resetForm = () => {
