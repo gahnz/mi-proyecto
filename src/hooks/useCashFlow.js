@@ -6,7 +6,7 @@ export function useCashFlow() {
   const [movements, setMovements] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  // Mapeo incluyendo docUrl
+  // Mapeo incluyendo docUrl e items
   const mapMovement = (m) => ({
     ...m,
     totalAmount: m.total_amount,
@@ -18,7 +18,8 @@ export function useCashFlow() {
     isEcommerce: m.is_ecommerce,
     deliveryBy: m.delivery_by,
     status: m.status,
-    docUrl: m.doc_url // 👈 NUEVO CAMPO
+    docUrl: m.doc_url,
+    items: m.items || [] // 👈 NUEVO: Mapear items
   });
 
   const fetchMovements = useCallback(async () => {
@@ -44,16 +45,9 @@ export function useCashFlow() {
     fetchMovements();
   }, [fetchMovements]);
 
-  // ... (addMovement, updateMovement, deleteMovement se mantienen igual, solo asegúrate de incluir doc_url si lo envías) ...
-  // Asegúrate de agregar doc_url: movement.docUrl en addMovement y updateMovement si quieres guardarlo desde el modal también.
-
   const addMovement = async (movement) => {
-      // ... (código existente) ...
-      // Asegúrate de agregar: doc_url: movement.docUrl
-      // dentro del objeto insert
       try {
         const { data, error } = await supabase.from("cash_flow").insert([{
-            // ... otros campos ...
             date: movement.date,
             type: movement.type,
             category: movement.category,
@@ -67,7 +61,8 @@ export function useCashFlow() {
             is_ecommerce: movement.isEcommerce,
             status: movement.status || 'confirmed',
             delivery_by: movement.deliveryBy,
-            doc_url: movement.docUrl // 👈 Agregado aquí
+            doc_url: movement.docUrl,
+            items: movement.items // 👈 NUEVO: Guardar items
         }]).select();
         
         if (error) throw error;
@@ -80,7 +75,6 @@ export function useCashFlow() {
   const updateMovement = async (id, updatedFields) => {
       try {
         const { data, error } = await supabase.from("cash_flow").update({
-            // ... otros campos ...
             date: updatedFields.date,
             type: updatedFields.type,
             category: updatedFields.category,
@@ -94,7 +88,8 @@ export function useCashFlow() {
             is_ecommerce: updatedFields.isEcommerce,
             status: updatedFields.status,
             delivery_by: updatedFields.deliveryBy,
-            doc_url: updatedFields.docUrl // 👈 Agregado aquí
+            doc_url: updatedFields.docUrl,
+            items: updatedFields.items // 👈 NUEVO: Actualizar items
         }).eq("id", id).select();
 
         if (error) throw error;
@@ -105,7 +100,6 @@ export function useCashFlow() {
   };
   
   const deleteMovement = async (id) => {
-      // ... (igual que antes)
       try {
         const { error } = await supabase.from("cash_flow").delete().eq("id", id);
         if (error) throw error;
@@ -113,24 +107,20 @@ export function useCashFlow() {
       } catch(err) { throw err; }
   };
 
-  // 🔥 NUEVA FUNCIÓN: Subir documento directamente desde la tabla
   const uploadDocument = async (id, file) => {
     try {
-      // 1. Subir archivo al Storage
       const fileExt = file.name.split('.').pop();
       const fileName = `voucher_${id}_${Date.now()}.${fileExt}`;
       const { error: uploadError } = await supabase.storage
-        .from('finance-docs') // Asegúrate de crear este bucket en Supabase
+        .from('finance-docs')
         .upload(fileName, file);
 
       if (uploadError) throw uploadError;
 
-      // 2. Obtener URL pública
       const { data: { publicUrl } } = supabase.storage
         .from('finance-docs')
         .getPublicUrl(fileName);
 
-      // 3. Actualizar registro en BD
       const { data, error: dbError } = await supabase
         .from('cash_flow')
         .update({ doc_url: publicUrl })
@@ -139,7 +129,6 @@ export function useCashFlow() {
 
       if (dbError) throw dbError;
 
-      // 4. Actualizar estado local
       const updatedMov = mapMovement(data[0]);
       setMovements(prev => prev.map(m => m.id === id ? updatedMov : m));
       
