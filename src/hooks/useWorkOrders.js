@@ -54,13 +54,13 @@ export const useWorkOrders = () => {
       .channel('cambios_taller') 
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'work_orders' },
-        (payload) => { fetchOrders(); }
+        { event: '*', schema: 'public', table: 'work_orders' }, // Escucha INSERT, UPDATE y DELETE
+        () => { fetchOrders(); }
       )
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
-  }, []);
+}, []);
 
   // --- Funciones CRUD ---
   const createOrder = async (orderData) => {

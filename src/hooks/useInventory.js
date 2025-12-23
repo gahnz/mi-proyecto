@@ -47,6 +47,18 @@ export const useInventory = () => {
     await fetchInventory();
   };
 
+  // 👇 NUEVA FUNCIÓN: CARGA MASIVA DE ÍTEMS
+  const createBulkItems = async (itemsArray) => {
+    // El array ya debe venir transformado desde el componente Inventario.jsx
+    // con los nombres de columna correctos (snake_case)
+    const { error } = await supabase
+      .from('inventory')
+      .insert(itemsArray);
+    
+    if (error) throw error;
+    await fetchInventory(); // Recargar la lista para reflejar los nuevos cambios
+  };
+
   const updateItem = async (id, item) => {
     const dbPayload = {
       name: item.name,
@@ -74,5 +86,16 @@ export const useInventory = () => {
     fetchInventory();
   }, []);
 
-  return { inventory, loading, error, addItem, updateItem, deleteItem, refresh: fetchInventory };
+  // Se añade createBulkItems al retorno del hook para que sea accesible
+  return { 
+    inventory, 
+    loading, 
+    error, 
+    addItem, 
+    createBulkItems, // 👈 Exportado
+    updateItem, 
+    deleteItem, 
+    refresh: fetchInventory,
+    refreshInventory: fetchInventory // Alias para compatibilidad con otros módulos
+  };
 };
