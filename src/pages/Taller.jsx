@@ -15,30 +15,21 @@ import { useEquipos } from "../hooks/useEquipos";
 import { useInventory } from "../hooks/useInventory";
 import { generateOrderPDF } from "../utils/pdfGenerator"; 
 import { getChileTime } from "../utils/time"; 
-
-const JOB_TYPES = ["Mantenimiento", "Reparación", "Revisión", "Configuración"];
-const STATUS_LIST = [
-    "En cola", "Trabajando", "Revisión del Coordinador",
-    "Notificado y no pagado", "Pagado y no retirado",
-    "Retirado y no pagado", "Finalizado y Pagado", "Cancelado"
-];
-const DOC_TYPES = ["Boleta", "Factura", "Voucher Interno", "Guía de Despacho"];
+// 👇 1. IMPORTACIÓN CORREGIDA (DOCUMENT_TYPES)
+import { WORKSHOP_STATUSES, JOB_TYPES, DOCUMENT_TYPES, PAYMENT_METHODS } from "../constants";
 
 const Taller = () => {
-    // Hooks
-const { orders: repairs, loading, createOrder, updateOrder, deleteOrder, refresh } = useWorkOrders();
+    const { orders: repairs, loading, createOrder, updateOrder, deleteOrder, refresh } = useWorkOrders();
     const { customers: clients } = useCustomers();
     const { equipments: equipmentsList } = useEquipos();
     const { inventory: inventoryItems } = useInventory();
 
-    // Local State
     const [technicians, setTechnicians] = useState([]);
     const [filterStatus, setFilterStatus] = useState("Todos");
     const [filterLocation, setFilterLocation] = useState("Todos");
     const [filterTech, setFilterTech] = useState("Todos");
     const [searchTerm, setSearchTerm] = useState("");
 
-    // Modal & Interaction State
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [editingId, setEditingId] = useState(null);
     const [editingDbId, setEditingDbId] = useState(null);
@@ -46,14 +37,12 @@ const { orders: repairs, loading, createOrder, updateOrder, deleteOrder, refresh
     const [showScheduler, setShowScheduler] = useState(false);
     const [schedulerDate, setSchedulerDate] = useState(getChileTime().split('T')[0]);
 
-    // Search & Autocomplete State
     const [equipSearch, setEquipSearch] = useState("");
     const [showEquipOptions, setShowEquipOptions] = useState(false);
     const [clientSearch, setClientSearch] = useState("");
     const [showClientOptions, setShowClientOptions] = useState(false);
     const [uploadingDoc, setUploadingDoc] = useState(false);
 
-    // Form Data State
     const [formData, setFormData] = useState({
         status: "En cola",
         location: "Local",
@@ -70,7 +59,8 @@ const { orders: repairs, loading, createOrder, updateOrder, deleteOrder, refresh
         photoBefore: null, photoAfter: null,
         receiverName: "", receiverSignature: null,
         paymentMethod: "Efectivo",
-        docType: "Boleta", docNumber: "", docUrl: "", docFile: null,
+        docType: "Boleta Electrónica", // Valor por defecto compatible
+        docNumber: "", docUrl: "", docFile: null,
         stockDeducted: false
     });
 
@@ -85,7 +75,6 @@ const { orders: repairs, loading, createOrder, updateOrder, deleteOrder, refresh
         fetchTechnicians();
     }, []);
 
-    // Helper Functions
     const smartSearch = (text, search) => {
         if (!text || !search) return false;
         const searchTerms = search.toLowerCase().split(" ").filter(Boolean);
@@ -114,9 +103,6 @@ const { orders: repairs, loading, createOrder, updateOrder, deleteOrder, refresh
         }
     };
 
-    // ... (resto del código igual hasta llegar a Filter Logic)
-
-    // Filter Logic
     const filteredClients = clients.filter(c => {
         const searchString = `${c.full_name || ""} ${c.business_name || ""} ${c.rut || ""}`;
         return smartSearch(searchString, clientSearch);
@@ -152,7 +138,6 @@ const { orders: repairs, loading, createOrder, updateOrder, deleteOrder, refresh
         return matchesStatus && matchesSearch && matchesLocation && matchesTech;
     });
 
-    // Lógica de filtrado de items
     const compatibleItems = useMemo(() => {
         const selectedEquipmentObj = equipmentsList.find(e => e.id === Number(formData.equipmentId));
 
@@ -178,7 +163,6 @@ const { orders: repairs, loading, createOrder, updateOrder, deleteOrder, refresh
 
     const showFiscalFields = !['En cola', 'Trabajando'].includes(formData.status);
 
-    // Actions
     const handleShareLink = (e, orderId) => {
         e.stopPropagation();
         const link = `${window.location.origin}/tracker/${orderId}`;
@@ -187,8 +171,7 @@ const { orders: repairs, loading, createOrder, updateOrder, deleteOrder, refresh
         });
     };
 
-    // 🔥🔥 FUNCIÓN ACTUALIZADA: Recibe docUrl y determina Status
-    const registerCashFlowEntry = async (orderId, customerName, total, method, docUrl) => {
+    const registerCashFlowEntry = async (orderId, customerName, total, method, docUrl, itemsList) => {
         if (!orderId) return;
         const { data: existing } = await supabase.from('cash_flow').select('id').ilike('description', `%${orderId}%`).limit(1);
         if (existing && existing.length > 0) return;
@@ -196,8 +179,7 @@ const { orders: repairs, loading, createOrder, updateOrder, deleteOrder, refresh
         const neto = Math.round(total / 1.19);
         const tax = total - neto;
         
-        // Determinar estado basado en medio de pago
-        const isDeferred = ["Mercado Pago", "Webpay"].includes(method);
+        const isDeferred = ["Mercado Pago"].includes(method);
         const status = isDeferred ? 'pending' : 'confirmed';
 
         const { error } = await supabase.from('cash_flow').insert([{
@@ -212,63 +194,56 @@ const { orders: repairs, loading, createOrder, updateOrder, deleteOrder, refresh
             doc_type: 'VOU',
             doc_number: orderId.replace('OT-', ''),
             is_ecommerce: false,
-            status: status, // 👈 Guardamos el estado correcto
-            doc_url: docUrl // 👈 Guardamos el PDF de la orden si existe
+            status: status, 
+            doc_url: docUrl,
+            items: itemsList
         }]);
 
         if (error) console.error("Error caja:", error);
         else toast.success(`💰 Ingreso de $${total.toLocaleString('es-CL')} registrado (${status === 'pending' ? 'Retenido' : 'Disponible'}).`);
     };
 
-    // En src/pages/Taller.jsx
+    const handleStockDeduction = async (items) => {
+        if (!items || items.length === 0) return;
 
-// Localiza handleStockDeduction en src/pages/Taller.jsx
-const handleStockDeduction = async (items) => {
-    if (!items || items.length === 0) return;
-
-    const promises = items.map(item => {
-        return supabase.rpc('update_inventory_stock', {
-            item_id: parseInt(item.id, 10), // 👈 Forzamos a entero base 10
-            quantity: parseInt(item.quantity || 1, 10),
-            warehouse_name: "Bodega Local"
+        const promises = items.map(item => {
+            return supabase.rpc('update_inventory_stock', {
+                item_id: parseInt(item.id, 10),
+                quantity: parseInt(item.quantity || 1, 10),
+                warehouse_name: "Bodega Local"
+            });
         });
-    });
 
-    try {
-        const results = await Promise.all(promises);
+        try {
+            const results = await Promise.all(promises);
+            results.forEach((res, index) => {
+                if (res.error) console.error(`❌ Error en ${items[index].name}:`, res.error.message);
+                else console.log(`✅ Stock restado: ${items[index].name}`);
+            });
+            toast.success("Inventario actualizado");
+        } catch (error) {
+            console.error("Error en proceso de stock:", error);
+        }
+    };
+
+    const handleStockRestoration = async (items) => {
+        if (!items || items.length === 0) return;
         
-        results.forEach((res, index) => {
-            if (res.error) {
-                console.error(`❌ Error en ${items[index].name}:`, res.error.message);
-            } else {
-                console.log(`✅ Stock restado: ${items[index].name}`);
-            }
-        });
-        
-        toast.success("Inventario actualizado");
-    } catch (error) {
-        console.error("Error en proceso de stock:", error);
-    }
-};
+        const promises = items.map(item => 
+            supabase.rpc('restore_inventory_stock', {
+                item_id: parseInt(item.id, 10),
+                quantity: parseInt(item.quantity || 1, 10),
+                warehouse_name: "Bodega Local"
+            })
+        );
 
-const handleStockRestoration = async (items) => {
-    if (!items || items.length === 0) return;
-    
-    const promises = items.map(item => 
-        supabase.rpc('restore_inventory_stock', {
-            item_id: parseInt(item.id, 10),
-            quantity: parseInt(item.quantity || 1, 10),
-            warehouse_name: "Bodega Local"
-        })
-    );
-
-    try {
-        await Promise.all(promises);
-        toast.info("📦 Stock devuelto a Bodega Local");
-    } catch (error) {
-        console.error("Error restaurando stock:", error);
-    }
-};
+        try {
+            await Promise.all(promises);
+            toast.info("📦 Stock devuelto a Bodega Local");
+        } catch (error) {
+            console.error("Error restaurando stock:", error);
+        }
+    };
 
     const handleEditOrder = (repair) => {
         setEditingId(repair.id);
@@ -295,7 +270,8 @@ const handleStockRestoration = async (items) => {
             photoBefore: repair.photo_before || null, photoAfter: repair.photo_after || null,
             receiverName: repair.receiver_name || "", receiverSignature: repair.receiver_signature || null,
             paymentMethod: repair.payment_method || "Efectivo",
-            docType: repair.doc_type || "Boleta", docNumber: repair.doc_number || "", docUrl: repair.doc_url || "", docFile: null,
+            docType: repair.doc_type || "Boleta Electrónica", 
+            docNumber: repair.doc_number || "", docUrl: repair.doc_url || "", docFile: null,
             stockDeducted: repair.stock_deducted || false
         });
         
@@ -304,11 +280,24 @@ const handleStockRestoration = async (items) => {
         setIsModalOpen(true);
     };
 
-    const handleDeleteOrder = async (uuid, orderId) => {
-        if (window.confirm(`⚠️ ¿Eliminar orden ${orderId}?`)) {
-            const promise = deleteOrder(uuid);
-            toast.promise(promise, { loading: 'Eliminando...', success: 'Orden eliminada', error: 'Error al eliminar' });
-        }
+    const handleDeleteOrder = async (order) => {
+        if (!window.confirm(`⚠️ ¿Estás seguro de eliminar la orden ${order.id}?`)) return;
+
+        const processDelete = async () => {
+            if (order.stock_deducted && order.items?.length > 0) {
+                console.log("Devolviendo stock de items:", order.items);
+                await handleStockRestoration(order.items);
+            }
+
+            await deleteOrder(order.db_id);
+            await refresh();
+        };
+
+        toast.promise(processDelete(), {
+            loading: 'Procesando eliminación...',
+            success: 'Orden eliminada y stock restaurado (si correspondía)',
+            error: (err) => `Error: ${err.message}`
+        });
     };
 
     const handleSaveOrder = async () => {
@@ -327,7 +316,6 @@ const handleStockRestoration = async (items) => {
 
         let finalDocUrl = formData.docUrl;
 
-        // Upload Document Logic
         if (formData.docFile) {
             setUploadingDoc(true);
             try {
@@ -351,7 +339,6 @@ const handleStockRestoration = async (items) => {
         const equipment = equipmentsList.find(e => e.id === Number(formData.equipmentId));
         const customerName = client ? (client.business_name || client.full_name) : "Cliente Manual";
 
-        // Lógica de descuento de stock
         let shouldDeductStock = false;
         if (formData.status === "Finalizado y Pagado" && !formData.stockDeducted) {
             shouldDeductStock = true;
@@ -387,36 +374,41 @@ const handleStockRestoration = async (items) => {
             stock_deducted: shouldDeductStock ? true : formData.stockDeducted
         };
 
-        // MODIFICACIÓN TEMPORAL PARA PRUEBAS
-const promise = (async () => {
-    if (editingDbId) {
-        await updateOrder(editingDbId, orderPayload);
-        
-        // LOG DE CONTROL:
-        console.log("Estado actual del formulario:", formData.status);
-        console.log("¿Ya se descontó stock antes?:", formData.stockDeducted);
-
-        // Llamamos a la función sin importar el estado solo para ver los logs de los items
-        await handleStockDeduction(formData.selectedItems); 
-        
-        if (formData.status === "Finalizado y Pagado") {
-            await registerCashFlowEntry(editingId, customerName, totalCost, formData.paymentMethod, finalDocUrl);
-        }
-    } else {
-        await createOrder(orderPayload);
-    }
-})();
+        const promise = (async () => {
+            if (editingDbId) {
+                await updateOrder(editingDbId, orderPayload);
+                
+                if (shouldDeductStock) {
+                    console.log("✅ Estado Finalizado detectado: Descontando inventario...");
+                    await handleStockDeduction(formData.selectedItems); 
+                }
+                
+                if (formData.status === "Finalizado y Pagado") {
+                    await registerCashFlowEntry(
+                        editingId, 
+                        customerName, 
+                        totalCost, 
+                        formData.paymentMethod, 
+                        finalDocUrl,
+                        formData.selectedItems,
+                        formData.clientId
+                    );
+                }
+            } else {
+                await createOrder(orderPayload);
+            }
+        })();
 
         toast.promise(promise, { 
-    loading: 'Guardando...', 
-    success: () => { 
-        setIsModalOpen(false); 
-        resetForm(); 
-        refresh(); // <--- Agrega esta línea aquí para actualizar la lista local
-        return 'Guardado correctamente'; 
-    }, 
-    error: (err) => `Error: ${err.message}` 
-});
+            loading: 'Guardando...', 
+            success: () => { 
+                setIsModalOpen(false); 
+                resetForm(); 
+                refresh(); 
+                return 'Guardado correctamente'; 
+            }, 
+            error: (err) => `Error: ${err.message}` 
+        });
     };
 
     const resetForm = () => {
@@ -424,7 +416,7 @@ const promise = (async () => {
             status: "En cola", location: "Local", equipmentId: "", jobType: "Reparación", reportedFault: "", clientId: "", technician: "",
             startDate: getChileTime().slice(0, 16), estimatedEndDate: "", internalNotes: "", selectedItems: [],
             probReal: "", solReal: "", obs: "", photoBefore: null, photoAfter: null, receiverName: "", receiverSignature: null, paymentMethod: "Efectivo",
-            docType: "Boleta", docNumber: "", docUrl: "", docFile: null, stockDeducted: false
+            docType: "Boleta Electrónica", docNumber: "", docUrl: "", docFile: null, stockDeducted: false
         });
         setEquipSearch(""); setClientSearch(""); setShowEquipOptions(false); setShowClientOptions(false);
         setEditingId(null); setEditingDbId(null); setActiveTab("order"); setUploadingDoc(false);
@@ -500,7 +492,16 @@ const promise = (async () => {
                                 <div className="flex gap-2">
                                     <button onClick={(e) => { e.stopPropagation(); generateOrderPDF(repair); }} className="p-2 bg-white/5 hover:bg-red-500/20 rounded-xl text-slate-400 hover:text-red-400 transition-all" title="Descargar Orden PDF"><FileText size={18} /></button>
                                     <button onClick={(e) => handleShareLink(e, repair.id)} className="p-2 bg-white/5 hover:bg-brand-cyan/20 rounded-xl text-slate-400 hover:text-brand-cyan transition-all" title="Copiar Link de Seguimiento"><Share2 size={18} /></button>
-                                    <button onClick={(e) => { e.stopPropagation(); handleDeleteOrder(repair.db_id, repair.id); }} className="p-2 bg-white/5 hover:bg-red-500/20 rounded-xl text-slate-400 hover:text-red-400 transition-all" title="Eliminar Orden"><Trash2 size={20} /></button>
+                                    <button 
+                                        onClick={(e) => { 
+                                            e.stopPropagation(); 
+                                            handleDeleteOrder(repair); 
+                                        }} 
+                                        className="p-2 bg-white/5 hover:bg-red-500/20 rounded-xl text-slate-400 hover:text-red-400 transition-all" 
+                                        title="Eliminar Orden"
+                                    >
+                                        <Trash2 size={20} />
+                                    </button>
                                 </div>
                             </div>
                         </div>
@@ -527,7 +528,6 @@ const promise = (async () => {
                                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                                     <div className="lg:col-span-1 space-y-6">
                                         <div className="space-y-4 bg-slate-950/50 p-4 rounded-xl border border-white/5">
-                                            {/* ... (Secciones de cliente y tecnico sin cambios) ... */}
                                             <div>
                                                 <label className="text-[10px] uppercase font-bold text-slate-500 mb-2 block">Modalidad</label>
                                                 <div className="grid grid-cols-2 gap-2">
@@ -536,7 +536,7 @@ const promise = (async () => {
                                             </div>
                                             <div>
                                                 <label className="text-[10px] uppercase font-bold text-slate-500 mb-2 block">Estado</label>
-                                                <select className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-white" value={formData.status} onChange={(e) => setFormData({ ...formData, status: e.target.value })}>{STATUS_LIST.map(s => <option key={s} value={s}>{s}</option>)}</select>
+                                                <select className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-white" value={formData.status} onChange={(e) => setFormData({ ...formData, status: e.target.value })}>{WORKSHOP_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}</select>
                                             </div>
                                             <div>
                                                 <label className="text-[10px] uppercase font-bold text-slate-500 mb-2 block">Tipo de Servicio</label>
@@ -615,9 +615,22 @@ const promise = (async () => {
                                                     </label>
                                                     <div className="space-y-3">
                                                         <div className="grid grid-cols-2 gap-2">
-                                                            <select className="bg-slate-900 border border-slate-700 rounded-lg p-2 text-white text-xs" value={formData.docType} onChange={(e) => setFormData({ ...formData, docType: e.target.value })}>{DOC_TYPES.map(t => <option key={t} value={t}>{t}</option>)}</select>
+                                                            {/* 👇 2. RENDERIZADO CORREGIDO PARA EVITAR ERROR 'OBJECT KEY' */}
+                                                            <select className="bg-slate-900 border border-slate-700 rounded-lg p-2 text-white text-xs" value={formData.docType} onChange={(e) => setFormData({ ...formData, docType: e.target.value })}>
+                                                                {DOCUMENT_TYPES.map(t => (
+                                                                    <option key={t.id} value={t.label}>{t.label}</option>
+                                                                ))}
+                                                            </select>
                                                             <input type="text" placeholder="N° Folio/Doc" className="bg-slate-900 border border-slate-700 rounded-lg p-2 text-white text-xs" value={formData.docNumber} onChange={(e) => setFormData({ ...formData, docNumber: e.target.value })} />
                                                         </div>
+                                                        
+                                                        <div>
+                                                            <label className="text-[9px] uppercase font-bold text-slate-500 mb-1 block">Medio de Pago</label>
+                                                            <select className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-white text-xs" value={formData.paymentMethod} onChange={(e) => setFormData({ ...formData, paymentMethod: e.target.value })}>
+                                                                {PAYMENT_METHODS.map(m => <option key={m} value={m}>{m}</option>)}
+                                                            </select>
+                                                        </div>
+
                                                         <div className="relative">
                                                             <input type="file" accept="application/pdf" className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" onChange={(e) => setFormData({ ...formData, docFile: e.target.files[0] })} />
                                                             <div className={`border border-dashed ${formData.docFile || formData.docUrl ? 'border-emerald-500 bg-emerald-500/10' : 'border-slate-700 bg-slate-900'} rounded-lg p-3 flex items-center justify-center gap-2 transition-all`}>

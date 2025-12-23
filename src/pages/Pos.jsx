@@ -7,10 +7,8 @@ import { toast } from "sonner";
 import { supabase } from "../supabase/client";
 import { useInventory } from "../hooks/useInventory"; 
 import { useCustomers } from "../hooks/useCustomers";
-import { getChileTime } from "../utils/time"; // Asegúrate de tener esta utilidad, o usa new Date()
-
-// 🔥 NUEVOS MÉTODOS DE PAGO DEFINIDOS
-const PAYMENT_METHODS = ["Efectivo", "Banco de Chile", "Mercado Pago"];
+import { getChileTime } from "../utils/time";
+import { PAYMENT_METHODS } from "../constants";
 
 export default function POS() {
     const { inventory, refreshInventory } = useInventory(); // refreshInventory para actualizar stock al vender
@@ -59,7 +57,7 @@ export default function POS() {
             const matchesCategory = selectedCategory === "Todos" || item.type === selectedCategory;
             const hasStock = (item.stocksByWarehouse?.["Bodega Local"] || 0) > 0 || item.type === "Servicio";
             return matchesSearch && matchesCategory && hasStock;
-        });
+        }).sort((a, b) => a.name.localeCompare(b.name)); // 👈 AQUÍ AGREGAMOS EL ORDEN ALFABÉTICO
     }, [inventory, searchTerm, selectedCategory]);
 
     // Totales
@@ -110,7 +108,7 @@ export default function POS() {
         setIsProcessing(true);
 
         const finalClientName = selectedClient ? (selectedClient.business_name || selectedClient.full_name) : (clientSearch || "Cliente General");
-        const dateNow = getChileTime().split('T')[0]; // O new Date().toISOString().split('T')[0]
+        const dateNow = getChileTime().split('T')[0]; 
 
         try {
             // 1. REGISTRAR EN FLUJO DE CAJA (CASH_FLOW)
@@ -118,13 +116,14 @@ export default function POS() {
                 date: dateNow,
                 type: 'income',
                 category: 'VENTA',
-                description: `Venta POS | ${finalClientName} | ${cart.length} Items`,
+                description: `Venta POS | ${finalClientName}`, 
                 payment_method: paymentMethod,
                 total_amount: total,
-                net_amount: subtotal,   // Neto calculado
-                tax_amount: tax,        // IVA calculado
+                net_amount: subtotal,
+                tax_amount: tax,
                 is_ecommerce: false,
-                client_id: selectedClient ? selectedClient.id : null
+                client_id: selectedClient ? selectedClient.id : null,
+                items: cart 
             }]);
 
             if (cashError) throw new Error("Error registrando en caja: " + cashError.message);
@@ -150,8 +149,7 @@ export default function POS() {
             // Limpiar todo
             setCart([]);
             clearClient();
-           // refreshInventory(); // Recargar inventario visualmente
-           window.location.reload();
+            window.location.reload();
 
         } catch (error) {
             console.error(error);

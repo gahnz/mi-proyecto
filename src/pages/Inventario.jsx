@@ -4,42 +4,36 @@ import {
     Home, Truck, Zap, Smartphone, ShoppingCart, PackageCheck, 
     ClipboardList, Calendar, Hash, Clock, PackagePlus, DollarSign,
     CheckSquare, Square, ArrowUpDown, ArrowUp, ArrowDown, ExternalLink, Link as LinkIcon,
-    Copy, ListChecks, FileSpreadsheet, Download // 👈 Agregados iconos para Excel
+    Copy, ListChecks, FileSpreadsheet, Download, Receipt
 } from "lucide-react";
-import * as XLSX from 'xlsx'; // 👈 Librería para Excel
+import * as XLSX from 'xlsx';
 import { toast } from "sonner"; 
 import { supabase } from "../supabase/client"; 
 import { useInventory } from "../hooks/useInventory";
 import { useEquipos } from "../hooks/useEquipos";
+import { WAREHOUSES } from "../constants";
 
-const WAREHOUSES = [
-  { id: "Bodega Local", label: "Bodega Local", icon: <Home size={14} />, color: "bg-slate-800 text-slate-300" },
-  { id: "Mercado Libre", label: "Mercado Libre", icon: <Truck size={14} />, color: "bg-blue-500 text-white" },
-  { id: "Mercado Full", label: "Mercado Full", icon: <Zap size={14} />, color: "bg-yellow-400 text-black" }
-];
 
 export default function Inventario() {
-  // Asegúrate de que useInventory ya tenga exportada la función createBulkItems
   const { inventory: items, loading, addItem, updateItem, deleteItem, refreshInventory, createBulkItems } = useInventory();
   const { equipments: availableEquipments } = useEquipos();
 
   const [activeTab, setActiveTab] = useState("inventory"); 
-
   const [searchTerm, setSearchTerm] = useState("");
   const [sortConfig, setSortConfig] = useState({ key: 'name', direction: 'asc' });
 
+  // Modales
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [isOrderModalOpen, setIsOrderModalOpen] = useState(false);
+  const [isReceptionModalOpen, setIsReceptionModalOpen] = useState(false);
+
   const [itemToDelete, setItemToDelete] = useState(null);
   const [editingId, setEditingId] = useState(null);
+  const [editingOrderId, setEditingOrderId] = useState(null);
   
   const [modelSearch, setModelSearch] = useState("");
-  const [showModelOptions, setShowModelOptions] = useState(false);
-
   const [orders, setOrders] = useState([]);
-  const [isOrderModalOpen, setIsOrderModalOpen] = useState(false);
-  const [editingOrderId, setEditingOrderId] = useState(null);
-  const [newOrder, setNewOrder] = useState({ supplier: "", trackingCode: "", trackingUrl: "", estimatedDate: "", items: [] });
   const [itemSelectorSearch, setItemSelectorSearch] = useState("");
 
   const initialStocks = { "Bodega Local": 0, "Mercado Libre": 0, "Mercado Full": 0 };
@@ -49,23 +43,29 @@ export default function Inventario() {
     stocksByWarehouse: { ...initialStocks }, min_stock: 5, compatible_models: []
   });
 
-  // --- NUEVA LÓGICA: CARGA MASIVA EXCEL ---
+  const [newOrder, setNewOrder] = useState({ 
+      supplier: "", 
+      trackingCode: "", 
+      trackingUrl: "", 
+      estimatedDate: "", 
+      items: [],
+      paymentMethod: "Banco de Chile", // Valor por defecto
+      category: "MERCADERIA"
+  });
+  
+  // Estado para la recepción (si se usa en el futuro para editar recepción)
+  const [receptionData, setReceptionData] = useState({
+      orderId: null,
+      order: null,
+      paymentMethod: "Banco de Chile",
+      category: "MERCADERIA",
+      description: "",
+      total: 0
+  });
 
+  // --- LÓGICA EXCEL ---
   const handleDownloadTemplate = () => {
-    const template = [
-      {
-        NOMBRE: "Pantalla iPhone 13 OLED",
-        TIPO: "Repuesto",
-        SKU: "PANT-IP13-001",
-        PRECIO_VENTA: 85000,
-        COSTO: 35000,
-        STOCK_MINIMO: 5,
-        BODEGA_LOCAL: 10,
-        MERCADO_LIBRE: 0,
-        MERCADO_FULL: 0,
-        COMPATIBILIDAD: "iPhone 13, iPhone 13 Pro" // Separado por comas
-      }
-    ];
+    const template = [{ NOMBRE: "Pantalla iPhone 13 OLED", TIPO: "Repuesto", SKU: "PANT-IP13-001", PRECIO_VENTA: 85000, COSTO: 35000, STOCK_MINIMO: 5, BODEGA_LOCAL: 10, MERCADO_LIBRE: 0, MERCADO_FULL: 0, COMPATIBILIDAD: "iPhone 13, iPhone 13 Pro" }];
     const ws = XLSX.utils.json_to_sheet(template);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Plantilla");
@@ -75,7 +75,6 @@ export default function Inventario() {
   const handleFileUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
-
     const reader = new FileReader();
     reader.onload = async (evt) => {
       try {
@@ -83,44 +82,20 @@ export default function Inventario() {
         const wb = XLSX.read(bstr, { type: 'binary' });
         const ws = wb.Sheets[wb.SheetNames[0]];
         const data = XLSX.utils.sheet_to_json(ws);
-
         if (data.length === 0) return toast.error("El archivo está vacío");
-
         const formattedItems = data.map(row => ({
-          name: row.NOMBRE || "Sin nombre",
-          type: row.TIPO || "Repuesto",
-          sku: row.SKU || "",
-          price_sell: Number(row.PRECIO_VENTA) || 0,
-          price_cost: Number(row.COSTO) || 0,
-          min_stock: Number(row.STOCK_MINIMO) || 5,
-          stocks_by_warehouse: {
-            "Bodega Local": Number(row.BODEGA_LOCAL) || 0,
-            "Mercado Libre": Number(row.MERCADO_LIBRE) || 0,
-            "Mercado Full": Number(row.MERCADO_FULL) || 0
-          },
+          name: row.NOMBRE || "Sin nombre", type: row.TIPO || "Repuesto", sku: row.SKU || "", price_sell: Number(row.PRECIO_VENTA) || 0, price_cost: Number(row.COSTO) || 0, min_stock: Number(row.STOCK_MINIMO) || 5,
+          stocks_by_warehouse: { "Bodega Local": Number(row.BODEGA_LOCAL) || 0, "Mercado Libre": Number(row.MERCADO_LIBRE) || 0, "Mercado Full": Number(row.MERCADO_FULL) || 0 },
           compatible_models: row.COMPATIBILIDAD ? row.COMPATIBILIDAD.split(',').map(m => m.trim()) : []
         }));
-
-        toast.promise(createBulkItems(formattedItems), {
-          loading: 'Procesando carga masiva...',
-          success: '¡Inventario actualizado con éxito!',
-          error: 'Error al importar los datos'
-        });
-        
-        e.target.value = null; // Reset input
-      } catch (err) {
-        console.error(err);
-        toast.error("Error al leer el archivo Excel");
-      }
+        toast.promise(createBulkItems(formattedItems), { loading: 'Procesando carga...', success: '¡Inventario actualizado!', error: 'Error al importar' });
+        e.target.value = null; 
+      } catch (err) { console.error(err); toast.error("Error al leer Excel"); }
     };
     reader.readAsBinaryString(file);
   };
 
-  // --- FIN LÓGICA EXCEL ---
-
-  useEffect(() => {
-    fetchOrders();
-  }, []);
+  useEffect(() => { fetchOrders(); }, []);
 
   const fetchOrders = async () => {
     const { data } = await supabase.from('supply_orders').select('*').order('created_at', { ascending: false });
@@ -129,21 +104,13 @@ export default function Inventario() {
 
   const incomingItemIds = useMemo(() => {
       const ids = new Set();
-      orders
-        .filter(o => o.status === 'Pendiente')
-        .forEach(order => {
-            if (Array.isArray(order.items)) {
-                order.items.forEach(item => ids.add(item.id));
-            }
-        });
+      orders.filter(o => o.status === 'Pendiente').forEach(order => { if (Array.isArray(order.items)) order.items.forEach(item => ids.add(item.id)); });
       return ids;
   }, [orders]);
 
   const handleSort = (key) => {
       let direction = 'asc';
-      if (sortConfig.key === key && sortConfig.direction === 'asc') {
-          direction = 'desc';
-      }
+      if (sortConfig.key === key && sortConfig.direction === 'asc') direction = 'desc';
       setSortConfig({ key, direction });
   };
 
@@ -159,108 +126,55 @@ export default function Inventario() {
 
   const toggleCompatibleModel = (modelName) => {
       const currentModels = formData.compatible_models;
-      if (currentModels.includes(modelName)) {
-          setFormData({ ...formData, compatible_models: currentModels.filter(m => m !== modelName) });
-      } else {
-          setFormData({ ...formData, compatible_models: [...currentModels, modelName] });
-      }
+      if (currentModels.includes(modelName)) setFormData({ ...formData, compatible_models: currentModels.filter(m => m !== modelName) });
+      else setFormData({ ...formData, compatible_models: [...currentModels, modelName] });
   };
 
   const handleSelectAllVisible = () => {
       const visibleModelNames = filteredEquips.map(eq => `${eq.brand} ${eq.model}`);
       const allSelected = visibleModelNames.every(name => formData.compatible_models.includes(name));
-
-      if (allSelected) {
-          setFormData({
-              ...formData,
-              compatible_models: formData.compatible_models.filter(m => !visibleModelNames.includes(m))
-          });
-      } else {
-          const newSelection = new Set([...formData.compatible_models, ...visibleModelNames]);
-          setFormData({
-              ...formData,
-              compatible_models: Array.from(newSelection)
-          });
-      }
-  };
-
-  const removeCompatibleModel = (modelName) => {
-      setFormData({ 
-          ...formData, 
-          compatible_models: formData.compatible_models.filter(m => m !== modelName) 
-      });
+      if (allSelected) setFormData({ ...formData, compatible_models: formData.compatible_models.filter(m => !visibleModelNames.includes(m)) });
+      else setFormData({ ...formData, compatible_models: Array.from(new Set([...formData.compatible_models, ...visibleModelNames])) });
   };
 
   const handleEdit = (item) => {
     setEditingId(item.id);
-    setFormData({
-      type: item.type, name: item.name, sku: item.sku || "",
-      price_sell: item.price_sell, price_cost: item.price_cost || 0,
-      stocksByWarehouse: item.stocksByWarehouse || { ...initialStocks },
-      min_stock: item.min_stock, compatible_models: item.compatible_models || []
-    });
+    setFormData({ type: item.type, name: item.name, sku: item.sku || "", price_sell: item.price_sell, price_cost: item.price_cost || 0, stocksByWarehouse: item.stocksByWarehouse || { ...initialStocks }, min_stock: item.min_stock, compatible_models: item.compatible_models || [] });
     setIsModalOpen(true);
   };
 
   const handleDuplicate = (item) => {
       setEditingId(null); 
-      setFormData({
-          type: item.type,
-          name: `${item.name} (Copia)`, 
-          sku: "", 
-          price_sell: item.price_sell,
-          price_cost: item.price_cost || 0,
-          stocksByWarehouse: { ...initialStocks }, 
-          min_stock: item.min_stock,
-          compatible_models: [...(item.compatible_models || [])] 
-      });
+      setFormData({ type: item.type, name: `${item.name} (Copia)`, sku: "", price_sell: item.price_sell, price_cost: item.price_cost || 0, stocksByWarehouse: { ...initialStocks }, min_stock: item.min_stock, compatible_models: [...(item.compatible_models || [])] });
       setIsModalOpen(true);
-      toast.info("Ítem duplicado. Revisa el nombre y SKU.");
+      toast.info("Ítem duplicado. Revisa nombre y SKU.");
   };
 
   const confirmDelete = (item) => { setItemToDelete(item); setIsDeleteModalOpen(true); };
-  
-  const handleDelete = async () => {
-    if (!itemToDelete) return;
-    await deleteItem(itemToDelete.id);
-    setIsDeleteModalOpen(false);
-    setItemToDelete(null);
-    toast.success("Ítem eliminado");
-  };
+  const handleDelete = async () => { if (!itemToDelete) return; await deleteItem(itemToDelete.id); setIsDeleteModalOpen(false); setItemToDelete(null); toast.success("Ítem eliminado"); };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     const promise = editingId ? updateItem(editingId, formData) : addItem(formData);
     toast.promise(promise, { loading: 'Guardando...', success: 'Guardado correctamente', error: 'Error al guardar' });
-    try {
-        await promise;
-        setIsModalOpen(false);
-        setEditingId(null);
-        resetForm();
-    } catch (error) { console.error(error); }
+    try { await promise; setIsModalOpen(false); setEditingId(null); resetForm(); } catch (error) { console.error(error); }
   };
 
-  const resetForm = () => {
-    setFormData({ type: "Repuesto", name: "", sku: "", price_sell: 0, price_cost: 0, stocksByWarehouse: { ...initialStocks }, min_stock: 5, compatible_models: [] });
-    setEditingId(null);
-    setModelSearch("");
-  };
-
-  const updateWarehouseStock = (warehouseId, value) => {
-    setFormData(prev => ({ ...prev, stocksByWarehouse: { ...prev.stocksByWarehouse, [warehouseId]: parseInt(value) || 0 } }));
-  };
+  const resetForm = () => { setFormData({ type: "Repuesto", name: "", sku: "", price_sell: 0, price_cost: 0, stocksByWarehouse: { ...initialStocks }, min_stock: 5, compatible_models: [] }); setEditingId(null); setModelSearch(""); };
+  const updateWarehouseStock = (warehouseId, value) => { setFormData(prev => ({ ...prev, stocksByWarehouse: { ...prev.stocksByWarehouse, [warehouseId]: parseInt(value) || 0 } })); };
 
   const openEditOrderModal = (order) => {
       setEditingOrderId(order.id);
       setNewOrder({
-          supplier: order.supplier_name, trackingCode: order.tracking_code || "", trackingUrl: order.tracking_url || "", estimatedDate: order.estimated_delivery_date || "", items: order.items || []
+          supplier: order.supplier_name, trackingCode: order.tracking_code || "", trackingUrl: order.tracking_url || "", estimatedDate: order.estimated_delivery_date || "", items: order.items || [],
+          paymentMethod: "Banco de Chile", category: "MERCADERIA" 
       });
       setIsOrderModalOpen(true);
   };
 
   const handleDeletePurchase = async (e, orderId) => {
       e.stopPropagation();
-      if(!window.confirm("⚠️ ¿Estás seguro de eliminar esta orden de compra?")) return;
+      if(!window.confirm("⚠️ ¿Eliminar orden de compra?")) return;
       const { error } = await supabase.from('supply_orders').delete().eq('id', orderId);
       if (error) { toast.error("Error al eliminar"); } else { toast.success("Orden eliminada"); fetchOrders(); }
   };
@@ -272,45 +186,111 @@ export default function Inventario() {
     setItemSelectorSearch(""); 
   };
 
-  const updateOrderItem = (id, field, value) => {
-    setNewOrder({ ...newOrder, items: newOrder.items.map(i => i.id === id ? { ...i, [field]: Number(value) } : i) });
-  };
+  const updateOrderItem = (id, field, value) => { setNewOrder({ ...newOrder, items: newOrder.items.map(i => i.id === id ? { ...i, [field]: Number(value) } : i) }); };
+  const removeOrderItem = (id) => { setNewOrder({ ...newOrder, items: newOrder.items.filter(i => i.id !== id) }); };
 
-  const removeOrderItem = (id) => {
-    setNewOrder({ ...newOrder, items: newOrder.items.filter(i => i.id !== id) });
-  };
-
+  // 🔥 CREACIÓN DE ORDEN + REGISTRO AUTOMÁTICO EN CAJA (CON COSTOS CORRECTOS)
   const submitOrder = async () => {
     if (!newOrder.supplier || newOrder.items.length === 0) { toast.error("Falta proveedor o items"); return; }
     const total = newOrder.items.reduce((acc, i) => acc + (i.quantity * i.purchase_cost), 0);
-    const payload = {
-        supplier_name: newOrder.supplier, items: newOrder.items, total_cost: total,
-        tracking_code: newOrder.trackingCode, tracking_url: newOrder.trackingUrl, estimated_delivery_date: newOrder.estimatedDate || null
+    
+    // 1. Crear Payload de Orden
+    const payload = { 
+        supplier_name: newOrder.supplier, 
+        items: newOrder.items, 
+        total_cost: total, 
+        tracking_code: newOrder.trackingCode, 
+        tracking_url: newOrder.trackingUrl, 
+        estimated_delivery_date: newOrder.estimatedDate || null 
     };
-    if (!editingOrderId) { payload.status = 'Pendiente'; }
-    let promise;
-    if (editingOrderId) { promise = supabase.from('supply_orders').update(payload).eq('id', editingOrderId); } 
-    else { promise = supabase.from('supply_orders').insert([payload]); }
-    const { error } = await promise;
-    if (error) { toast.error("Error al guardar orden"); } 
-    else { toast.success(editingOrderId ? "Orden actualizada" : "Orden creada"); setIsOrderModalOpen(false); setNewOrder({ supplier: "", trackingCode: "", trackingUrl: "", estimatedDate: "", items: [] }); setEditingOrderId(null); fetchOrders(); }
+    if (!editingOrderId) payload.status = 'Pendiente';
+
+    // 2. Guardar en Base de Datos (Orden)
+    let orderResult;
+    if (editingOrderId) { 
+        orderResult = await supabase.from('supply_orders').update(payload).eq('id', editingOrderId).select().single(); 
+    } else { 
+        orderResult = await supabase.from('supply_orders').insert([payload]).select().single(); 
+    }
+
+    const { data: savedOrder, error: orderError } = orderResult;
+
+    if (orderError) { 
+        toast.error("Error al guardar orden"); 
+        console.error(orderError);
+        return;
+    }
+
+    // 3. 🔥 REGISTRAR GASTO EN CAJA (SOLO SI ES NUEVA)
+    if (!editingOrderId) {
+        const dateNow = new Date().toISOString().split('T')[0];
+        
+        // 👇 MAPEO CLAVE: Forzamos que 'price' sea el costo de compra
+        const itemsForCashFlow = newOrder.items.map(item => ({
+            ...item,
+            price: item.purchase_cost // Así Flujo de Caja mostrará el costo, no el precio de venta
+        }));
+
+        const cashFlowEntry = {
+            date: dateNow,
+            type: 'expense',
+            category: newOrder.category, 
+            description: `Compra Inventario #${savedOrder.id} | Prov: ${newOrder.supplier}`,
+            payment_method: newOrder.paymentMethod, 
+            total_amount: total,
+            net_amount: Math.round(total / 1.19),
+            tax_amount: total - Math.round(total / 1.19),
+            status: 'confirmed',
+            is_ecommerce: false,
+            items: itemsForCashFlow // 👈 Usamos la lista con precios corregidos
+        };
+
+        const { error: cashError } = await supabase.from('cash_flow').insert([cashFlowEntry]);
+        if (cashError) {
+            console.error("Error registrando gasto:", cashError);
+            toast.warning("Orden creada, pero hubo error al registrar en caja.");
+        } else {
+            toast.success("✅ Orden creada y Gasto registrado en Caja");
+        }
+    } else {
+        toast.success("Orden actualizada");
+    }
+
+    setIsOrderModalOpen(false); 
+    setNewOrder({ supplier: "", trackingCode: "", trackingUrl: "", estimatedDate: "", items: [], paymentMethod: "Banco de Chile", category: "MERCADERIA" }); 
+    setEditingOrderId(null); 
+    fetchOrders();
   };
 
+  // 🔥 RECEPCIÓN SIMPLIFICADA (SOLO STOCK)
   const handleReceiveOrder = async (e, order) => {
     e.stopPropagation();
-    if (!window.confirm("¿Confirmar recepción? Se sumará el stock a Bodega Local.")) return;
-    const promises = order.items.map(async (item) => {
-        const { data: currentData } = await supabase.from('inventory').select('stocks_by_warehouse').eq('id', item.id).single();
-        if (currentData) {
-            const currentStock = currentData.stocks_by_warehouse?.["Bodega Local"] || 0;
-            const newStock = currentStock + item.quantity;
-            const newStocksJson = { ...currentData.stocks_by_warehouse, "Bodega Local": newStock };
-            await supabase.from('inventory').update({ stocks_by_warehouse: newStocksJson }).eq('id', item.id);
-        }
-    });
-    await Promise.all(promises);
-    await supabase.from('supply_orders').update({ status: 'Recibido', received_at: new Date().toISOString() }).eq('id', order.id);
-    toast.success("📦 Stock recepcionado correctamente"); fetchOrders(); refreshInventory();
+    if (!window.confirm("¿Confirmar recepción de mercadería?\n\n(El gasto ya fue registrado al crear la orden)")) return;
+
+    try {
+        // A. Actualizar Stock
+        const promises = (order.items || []).map(async (item) => {
+            const { data: currentData } = await supabase.from('inventory').select('stocks_by_warehouse').eq('id', item.id).single();
+            if (currentData) {
+                const currentStock = currentData.stocks_by_warehouse?.["Bodega Local"] || 0;
+                const newStock = currentStock + (Number(item.quantity) || 0);
+                const newStocksJson = { ...currentData.stocks_by_warehouse, "Bodega Local": newStock };
+                await supabase.from('inventory').update({ stocks_by_warehouse: newStocksJson }).eq('id', item.id);
+            }
+        });
+        await Promise.all(promises);
+
+        // B. Cerrar Orden (Sin tocar caja)
+        await supabase.from('supply_orders').update({ status: 'Recibido', received_at: new Date().toISOString() }).eq('id', order.id);
+
+        toast.success("✅ Stock ingresado correctamente"); 
+        fetchOrders(); 
+        refreshInventory();
+
+    } catch (error) {
+        console.error("Error recepción:", error);
+        toast.error("Error al procesar", { description: error.message });
+    }
   };
 
   const filteredItems = items.filter(i => i.name.toLowerCase().includes(searchTerm.toLowerCase()) || (i.sku && i.sku.toLowerCase().includes(searchTerm.toLowerCase())));
@@ -343,34 +323,17 @@ export default function Inventario() {
         <div className="flex gap-2 items-center">
             {activeTab === 'inventory' && (
               <>
-                <button 
-                  onClick={handleDownloadTemplate}
-                  className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-2.5 rounded-xl font-bold flex items-center gap-2 border border-white/10 transition-all text-[10px] uppercase tracking-wider"
-                  title="Descargar Plantilla Excel"
-                >
-                  <Download size={16} /> Plantilla
-                </button>
-
+                <button onClick={handleDownloadTemplate} className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-2.5 rounded-xl font-bold flex items-center gap-2 border border-white/10 transition-all text-[10px] uppercase tracking-wider" title="Descargar Plantilla Excel"><Download size={16} /> Plantilla</button>
                 <div className="relative">
-                  <input 
-                    type="file" 
-                    accept=".xlsx, .xls" 
-                    onChange={handleFileUpload} 
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                  />
-                  <button className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2.5 rounded-xl font-bold flex items-center gap-2 shadow-lg shadow-emerald-500/20 transition-all text-[10px] uppercase tracking-wider">
-                    <FileSpreadsheet size={16} /> Importar Excel
-                  </button>
+                  <input type="file" accept=".xlsx, .xls" onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" />
+                  <button className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2.5 rounded-xl font-bold flex items-center gap-2 shadow-lg shadow-emerald-500/20 transition-all text-[10px] uppercase tracking-wider"><FileSpreadsheet size={16} /> Importar Excel</button>
                 </div>
               </>
             )}
-
             {activeTab === 'inventory' ? (
-                <button onClick={() => { resetForm(); setIsModalOpen(true); }} className="bg-brand-gradient hover:opacity-90 text-white px-6 py-2.5 rounded-xl flex items-center gap-2 font-black uppercase tracking-widest transition-all shadow-lg shadow-brand-purple/30 text-xs ml-2">
-                    <Plus size={18} /> Nuevo Ítem
-                </button>
+                <button onClick={() => { resetForm(); setIsModalOpen(true); }} className="bg-brand-gradient hover:opacity-90 text-white px-6 py-2.5 rounded-xl flex items-center gap-2 font-black uppercase tracking-widest transition-all shadow-lg shadow-brand-purple/30 text-xs ml-2"><Plus size={18} /> Nuevo Ítem</button>
             ) : (
-                <button onClick={() => { setEditingOrderId(null); setNewOrder({ supplier: "", trackingCode: "", trackingUrl: "", estimatedDate: "", items: [] }); setIsOrderModalOpen(true); }} className="bg-brand-cyan hover:bg-brand-cyan/80 text-black px-6 py-2.5 rounded-xl flex items-center gap-2 font-black uppercase tracking-widest transition-all shadow-lg shadow-brand-cyan/30 text-xs"><ShoppingCart size={18} /> Nueva Compra</button>
+                <button onClick={() => { setEditingOrderId(null); setNewOrder({ supplier: "", trackingCode: "", trackingUrl: "", estimatedDate: "", items: [], paymentMethod: "Banco de Chile", category: "MERCADERIA" }); setIsOrderModalOpen(true); }} className="bg-brand-cyan hover:bg-brand-cyan/80 text-black px-6 py-2.5 rounded-xl flex items-center gap-2 font-black uppercase tracking-widest transition-all shadow-lg shadow-brand-cyan/30 text-xs"><ShoppingCart size={18} /> Nueva Compra</button>
             )}
         </div>
       </div>
@@ -386,13 +349,9 @@ export default function Inventario() {
                 <table className="w-full text-left">
                 <thead className="bg-white/5 text-slate-400 text-[10px] uppercase font-black tracking-[0.2em]">
                     <tr>
-                        <th className="px-6 py-4 cursor-pointer hover:text-white transition-colors" onClick={() => handleSort('name')}>
-                            <div className="flex items-center gap-2">Ítem / Info {getSortIcon('name')}</div>
-                        </th>
+                        <th className="px-6 py-4 cursor-pointer hover:text-white transition-colors" onClick={() => handleSort('name')}><div className="flex items-center gap-2">Ítem / Info {getSortIcon('name')}</div></th>
                         <th className="px-6 py-4">Distribución de Stock</th>
-                        <th className="px-6 py-4 text-center cursor-pointer hover:text-white transition-colors" onClick={() => handleSort('totalStock')}>
-                            <div className="flex items-center justify-center gap-2">Total {getSortIcon('totalStock')}</div>
-                        </th>
+                        <th className="px-6 py-4 text-center cursor-pointer hover:text-white transition-colors" onClick={() => handleSort('totalStock')}><div className="flex items-center justify-center gap-2">Total {getSortIcon('totalStock')}</div></th>
                         <th className="px-6 py-4 text-right">Precio Venta</th>
                         <th className="px-6 py-4 text-center">Acciones</th>
                     </tr>
@@ -401,14 +360,10 @@ export default function Inventario() {
                     {sortedItems.map((item) => { 
                     const totalStock = Object.values(item.stocksByWarehouse || {}).reduce((a, b) => a + b, 0);
                     const isIncoming = incomingItemIds.has(item.id);
-
                     return (
                         <tr key={item.id} className="hover:bg-white/5 transition-all group">
                         <td className="px-6 py-4">
-                            <div className="font-bold text-white uppercase text-sm tracking-tight flex items-center gap-2">
-                                {item.name}
-                                {isIncoming && (<div className="flex items-center gap-1 bg-yellow-500/10 border border-yellow-500/20 text-yellow-500 text-[9px] px-2 py-0.5 rounded-full font-black animate-pulse" title="Hay una compra pendiente de recibir con este ítem"><PackagePlus size={12} /> EN CAMINO</div>)}
-                            </div>
+                            <div className="font-bold text-white uppercase text-sm tracking-tight flex items-center gap-2">{item.name}{isIncoming && (<div className="flex items-center gap-1 bg-yellow-500/10 border border-yellow-500/20 text-yellow-500 text-[9px] px-2 py-0.5 rounded-full font-black animate-pulse" title="Hay una compra pendiente de recibir con este ítem"><PackagePlus size={12} /> EN CAMINO</div>)}</div>
                             <div className="flex items-center gap-2 mt-1"><span className="text-[9px] px-1.5 py-0.5 rounded-md bg-brand-purple/20 text-brand-purple border border-brand-purple/30 uppercase font-black tracking-widest">{item.type}</span><span className="text-[10px] text-slate-500 font-mono tracking-tighter">SKU: {item.sku || 'N/A'}</span></div>
                         </td>
                         <td className="px-6 py-4"><div className="flex gap-2">{item.type === 'Servicio' ? (<span className="text-brand-purple text-[10px] font-black uppercase tracking-widest bg-brand-purple/10 px-3 py-1 rounded-lg border border-brand-purple/20">Servicio Intangible</span>) : (<>{WAREHOUSES.map(w => { const stock = item.stocksByWarehouse?.[w.id] || 0; if (stock === 0) return null; return (<div key={w.id} className={`flex items-center gap-1 px-2 py-1 rounded-lg border border-white/5 ${w.color}`}>{w.icon}<span className="text-[10px] font-black uppercase tracking-tighter">{stock}</span></div>); })} {(!item.stocksByWarehouse || Object.values(item.stocksByWarehouse).every(s => s === 0)) && (<span className="text-slate-600 text-[10px] font-bold uppercase tracking-widest italic">Sin stock físico</span>)}</>)}</div></td>
@@ -430,7 +385,7 @@ export default function Inventario() {
         </>
       )}
 
-      {/* VISTA 2: COMPRAS (Mantener igual que antes) */}
+      {/* VISTA 2: COMPRAS */}
       {activeTab === 'purchases' && (
         <div className="space-y-4">
             {orders.length === 0 && <div className="text-center py-20 text-slate-500 italic">No hay órdenes de compra registradas.</div>}
@@ -454,10 +409,139 @@ export default function Inventario() {
         </div>
       )}
 
-      {/* MODALES - Mantener iguales */}
-      {/* ... Modal Crear Item ... */}
-      {/* ... Modal Orden de Compra ... */}
-      {/* ... Modal Eliminar ... */}
+      {/* MODAL ORDEN DE COMPRA */}
+      {isOrderModalOpen && (
+        <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-[100] flex items-center justify-center p-4">
+            <div className="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] animate-in fade-in zoom-in duration-200">
+                <div className="p-6 border-b border-white/10 flex justify-between items-center bg-slate-900 sticky top-0 z-10">
+                    <h2 className="text-xl font-black text-white italic uppercase tracking-tighter">
+                        {editingOrderId ? "Editar Orden" : "Nueva Orden de Compra"}
+                    </h2>
+                    <button onClick={() => setIsOrderModalOpen(false)}><X className="text-slate-500 hover:text-white" /></button>
+                </div>
+                
+                <div className="p-6 space-y-5 overflow-y-auto custom-scrollbar flex-1">
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Proveedor</label>
+                            <input type="text" className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={newOrder.supplier} onChange={(e) => setNewOrder({...newOrder, supplier: e.target.value})} placeholder="Nombre Proveedor" />
+                        </div>
+                        <div>
+                            <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Fecha Est. Llegada</label>
+                            <input type="date" className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={newOrder.estimatedDate} onChange={(e) => setNewOrder({...newOrder, estimatedDate: e.target.value})} />
+                        </div>
+                    </div>
+
+                    {/* 🔥 NUEVOS CAMPOS DE PAGO */}
+                    <div className="grid grid-cols-2 gap-4 bg-slate-950 p-4 rounded-xl border border-white/5">
+                        <div>
+                            <label className="text-[10px] font-bold text-brand-purple uppercase block mb-1 flex items-center gap-1"><DollarSign size={10}/> Medio de Pago</label>
+                            <select className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none text-xs" value={newOrder.paymentMethod} onChange={(e) => setNewOrder({...newOrder, paymentMethod: e.target.value})}>
+                                <option value="Efectivo">Efectivo</option>
+                                <option value="Banco de Chile">Banco de Chile</option>
+                                <option value="Mercado Pago">Mercado Pago</option>
+                                <option value="Transferencia">Transferencia</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label className="text-[10px] font-bold text-brand-cyan uppercase block mb-1 flex items-center gap-1"><ListChecks size={10}/> Categoría Egreso</label>
+                            <select className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none text-xs" value={newOrder.category} onChange={(e) => setNewOrder({...newOrder, category: e.target.value})}>
+                                <option value="MERCADERIA">Mercadería / Repuestos</option>
+                                <option value="HERRAMIENTAS">Herramientas e Insumos</option>
+                                <option value="G_GENERAL">Gasto General</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Código Seguimiento</label>
+                            <input type="text" className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={newOrder.trackingCode} onChange={(e) => setNewOrder({...newOrder, trackingCode: e.target.value})} placeholder="Ej: 123456789" />
+                        </div>
+                        <div>
+                            <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">URL Seguimiento</label>
+                            <input type="text" className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={newOrder.trackingUrl} onChange={(e) => setNewOrder({...newOrder, trackingUrl: e.target.value})} placeholder="https://..." />
+                        </div>
+                    </div>
+
+                    <div className="relative bg-slate-950 p-4 rounded-xl border border-white/5">
+                        <label className="text-[10px] font-bold text-brand-purple uppercase block mb-2 flex items-center gap-2"><Search size={12}/> Agregar Productos del Inventario</label>
+                        <input type="text" className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-brand-cyan transition-all" placeholder="Buscar item para agregar..." value={itemSelectorSearch} onChange={(e) => setItemSelectorSearch(e.target.value)} />
+                        {itemSelectorSearch && (
+                            <div className="absolute top-full left-0 right-0 mt-2 bg-slate-800 border border-white/10 rounded-xl shadow-xl max-h-40 overflow-y-auto z-20 mx-4">
+                                {itemsToBuy.length === 0 ? (
+                                    <div className="p-3 text-xs text-slate-500 text-center">No encontrado</div>
+                                ) : itemsToBuy.map(item => (
+                                    <div key={item.id} onClick={() => handleAddItemToOrder(item)} className="p-3 hover:bg-white/5 cursor-pointer border-b border-white/5 flex justify-between items-center transition-colors">
+                                        <span className="text-sm text-white font-medium">{item.name}</span>
+                                        <span className="text-xs text-brand-purple font-bold">${item.price_cost}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="space-y-2">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase block">Items en la Orden ({newOrder.items.length})</label>
+                        {newOrder.items.length === 0 ? (
+                            <div className="text-center py-8 text-slate-600 border-2 border-dashed border-white/5 rounded-xl text-xs font-medium">No hay items agregados a la orden.</div>
+                        ) : (
+                            newOrder.items.map((item, idx) => (
+                                <div key={idx} className="bg-slate-950/50 p-3 rounded-xl border border-white/5 flex items-center gap-3 hover:border-white/10 transition-all">
+                                    <div className="flex-1 min-w-0">
+                                        <div className="text-sm font-bold text-white truncate">{item.name}</div>
+                                        <div className="text-[10px] text-slate-500">{item.sku || 'S/N'}</div>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <div>
+                                            <label className="text-[8px] text-slate-500 block uppercase font-bold">Cant.</label>
+                                            <input type="number" className="w-16 bg-slate-900 border border-slate-700 rounded-lg p-1.5 text-center text-white text-xs font-bold outline-none focus:border-brand-purple" value={item.quantity} onChange={(e) => updateOrderItem(item.id, 'quantity', e.target.value)} />
+                                        </div>
+                                        <div>
+                                            <label className="text-[8px] text-slate-500 block uppercase font-bold">Costo Unit.</label>
+                                            <input type="number" className="w-24 bg-slate-900 border border-slate-700 rounded-lg p-1.5 text-right text-white text-xs font-mono outline-none focus:border-brand-purple" value={item.purchase_cost} onChange={(e) => updateOrderItem(item.id, 'purchase_cost', e.target.value)} />
+                                        </div>
+                                        <button onClick={() => removeOrderItem(item.id)} className="p-2 text-slate-500 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-all mt-3"><Trash2 size={16} /></button>
+                                    </div>
+                                </div>
+                            ))
+                        )}
+                    </div>
+                </div>
+
+                <div className="p-6 border-t border-white/10 bg-slate-900 flex justify-between items-center sticky bottom-0 z-10">
+                    <div className="text-right">
+                        <span className="text-[10px] text-slate-500 font-bold uppercase block tracking-widest">Total Estimado</span>
+                        <span className="text-2xl font-black text-brand-cyan tracking-tighter">${newOrder.items.reduce((acc, i) => acc + (i.quantity * i.purchase_cost), 0).toLocaleString('es-CL')}</span>
+                    </div>
+                    <button onClick={submitOrder} className="bg-brand-gradient text-white px-8 py-3 rounded-xl font-black uppercase tracking-widest shadow-lg shadow-brand-purple/20 hover:opacity-90 transition-all hover:scale-105 active:scale-95">Guardar Orden</button>
+                </div>
+            </div>
+        </div>
+      )}
+
+      {/* MODAL CREAR ITEM (Mantenido igual) */}
+      {isModalOpen && (
+        <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-[100] flex items-center justify-center p-4">
+            <div className="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col max-h-[90vh] animate-in fade-in zoom-in duration-200">
+                <div className="p-6 border-b border-white/10 flex justify-between items-center"><h2 className="text-xl font-black text-white italic uppercase">{editingId ? "Editar Producto" : "Nuevo Producto"}</h2><button onClick={() => setIsModalOpen(false)}><X className="text-slate-500 hover:text-white" /></button></div>
+                <form onSubmit={handleSubmit} className="p-6 space-y-4 overflow-y-auto custom-scrollbar">
+                    <div className="flex gap-2 p-1 bg-slate-950 rounded-xl border border-white/5">{['Repuesto', 'Accesorio', 'Servicio'].map(t => (<button key={t} type="button" onClick={() => setFormData({...formData, type: t})} className={`flex-1 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-all ${formData.type === t ? 'bg-brand-gradient text-white shadow-lg' : 'text-slate-500 hover:text-white'}`}>{t}</button>))}</div>
+                    <div><label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Nombre Item</label><input required className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={formData.name} onChange={(e) => setFormData({...formData, name: e.target.value})} /></div>
+                    <div className="grid grid-cols-2 gap-4"><div><label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">SKU / Código</label><input className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={formData.sku} onChange={(e) => setFormData({...formData, sku: e.target.value})} /></div><div><label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Stock Mínimo</label><input type="number" className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white outline-none" value={formData.min_stock} onChange={(e) => setFormData({...formData, min_stock: parseInt(e.target.value)})} /></div></div>
+                    <div className="grid grid-cols-2 gap-4 bg-slate-950 p-4 rounded-xl border border-white/5"><div><label className="text-[10px] font-bold text-brand-purple uppercase mb-1 block">Precio Costo</label><input type="number" className="w-full bg-slate-900 border border-brand-purple/30 rounded-xl p-3 text-white font-bold outline-none" value={formData.price_cost} onChange={(e) => setFormData({...formData, price_cost: parseInt(e.target.value)})} /></div><div><label className="text-[10px] font-bold text-brand-cyan uppercase mb-1 block">Precio Venta</label><input type="number" className="w-full bg-slate-900 border border-brand-cyan/30 rounded-xl p-3 text-white font-bold outline-none" value={formData.price_sell} onChange={(e) => setFormData({...formData, price_sell: parseInt(e.target.value)})} /></div></div>
+                    {formData.type !== 'Servicio' && (<div className="space-y-2"><label className="text-[10px] font-bold text-slate-500 uppercase">Distribución de Stock</label>{WAREHOUSES.map(w => (<div key={w.id} className="flex justify-between items-center bg-slate-800/50 p-3 rounded-xl border border-white/5"><div className="flex items-center gap-2 text-xs font-bold text-slate-300">{w.icon} {w.label}</div><input type="number" className="w-20 bg-slate-900 border border-slate-700 rounded-lg p-1.5 text-center text-white text-xs font-mono" value={formData.stocksByWarehouse[w.id] || 0} onChange={(e) => updateWarehouseStock(w.id, e.target.value)} /></div>))}</div>)}
+                    <div className="space-y-2"><label className="text-[10px] font-bold text-slate-500 uppercase flex justify-between items-center">Compatibilidad <button type="button" onClick={handleSelectAllVisible} className="text-brand-purple hover:underline">Seleccionar visibles</button></label><input type="text" placeholder="Buscar modelo..." className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2 text-xs text-white mb-2" value={modelSearch} onChange={(e) => setModelSearch(e.target.value)} /><div className="max-h-32 overflow-y-auto custom-scrollbar grid grid-cols-2 gap-2">{filteredEquips.map(eq => { const modelName = `${eq.brand} ${eq.model}`; const isSelected = formData.compatible_models.includes(modelName); return (<div key={eq.id} onClick={() => toggleCompatibleModel(modelName)} className={`p-2 rounded-lg text-[10px] font-bold cursor-pointer border transition-all ${isSelected ? 'bg-brand-purple/20 border-brand-purple text-white' : 'bg-slate-800 border-transparent text-slate-500 hover:bg-slate-700'}`}>{modelName}</div>)})}</div></div>
+                    <button className="w-full bg-brand-gradient py-3 rounded-xl text-white font-black uppercase tracking-widest hover:opacity-90">Guardar Producto</button>
+                </form>
+            </div>
+        </div>
+      )}
+
+      {/* MODAL ELIMINAR */}
+      {isDeleteModalOpen && (
+        <div className="fixed inset-0 bg-slate-950/95 backdrop-blur-md flex items-center justify-center z-[110] p-4"><div className="bg-slate-900 border border-red-500/30 w-full max-w-sm rounded-[2.5rem] shadow-2xl p-8 text-center animate-in fade-in zoom-in duration-300"><div className="w-16 h-16 bg-red-500/10 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4 border border-red-500/20"><AlertTriangle size={32} /></div><h2 className="text-xl font-black text-white mb-2 uppercase italic">¿Eliminar Ítem?</h2><p className="text-slate-400 mb-8 text-xs font-medium px-4">Esta acción borrará <span className="text-white font-bold italic">"{itemToDelete?.name}"</span> permanentemente.</p><div className="flex gap-4"><button onClick={() => setIsDeleteModalOpen(false)} className="flex-1 bg-slate-800 text-white font-black py-4 rounded-2xl hover:bg-slate-700 transition-all uppercase text-[10px] tracking-widest">Cancelar</button><button onClick={handleDelete} className="flex-1 bg-red-600 text-white font-black py-4 rounded-2xl hover:bg-red-700 transition-all shadow-lg shadow-red-600/30 uppercase text-[10px] tracking-widest italic">Sí, Eliminar</button></div></div></div>
+      )}
 
     </div>
   );
