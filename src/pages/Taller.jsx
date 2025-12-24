@@ -4,7 +4,7 @@ import {
     Smartphone, Laptop, Tablet, User, Calendar, DollarSign,
     MapPin, Clock, FileText, PenTool, X, Trash2,
     Save, Monitor, Printer, Cpu, Lock, Share2,
-    Receipt, UploadCloud, FileCheck, BoxSelect
+    Receipt, UploadCloud, FileCheck, BoxSelect, Home, Car
 } from "lucide-react";
 import { supabase } from "../supabase/client";
 import { toast } from "sonner"; 
@@ -15,7 +15,6 @@ import { useEquipos } from "../hooks/useEquipos";
 import { useInventory } from "../hooks/useInventory";
 import { generateOrderPDF } from "../utils/pdfGenerator"; 
 import { getChileTime } from "../utils/time"; 
-// 👇 1. IMPORTACIÓN CORREGIDA (DOCUMENT_TYPES)
 import { WORKSHOP_STATUSES, JOB_TYPES, DOCUMENT_TYPES, PAYMENT_METHODS } from "../constants";
 
 const Taller = () => {
@@ -59,7 +58,7 @@ const Taller = () => {
         photoBefore: null, photoAfter: null,
         receiverName: "", receiverSignature: null,
         paymentMethod: "Efectivo",
-        docType: "Boleta Electrónica", // Valor por defecto compatible
+        docType: "Boleta Electrónica", 
         docNumber: "", docUrl: "", docFile: null,
         stockDeducted: false
     });
@@ -314,6 +313,12 @@ const Taller = () => {
             return;
         }
 
+        // 👇 VALIDACIÓN DE FECHA DE TÉRMINO
+        if (formData.estimatedEndDate && new Date(formData.estimatedEndDate) <= new Date(formData.startDate)) {
+            toast.error("Error en fechas", { description: "La fecha estimada de término debe ser posterior a la fecha de inicio." });
+            return;
+        }
+
         let finalDocUrl = formData.docUrl;
 
         if (formData.docFile) {
@@ -484,11 +489,36 @@ const Taller = () => {
                                     <span className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider border ${getStatusColor(repair.status)}`}>{repair.status}</span>
                                     <span className="px-2 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider bg-slate-800 text-slate-400 border border-white/5 flex items-center gap-1"><User size={10} /> {repair.customer}</span>
                                     <span className="px-2 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider bg-brand-purple/10 text-brand-purple border border-brand-purple/20 flex items-center gap-1"><PenTool size={10} /> {repair.technician || "Sin Asignar"}</span>
+                                    
+                                    {/* 👇 MODALIDAD */}
+                                    <span className={`px-2 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider border flex items-center gap-1 ${repair.location === 'Terreno' ? 'bg-amber-400/10 text-amber-400 border-amber-400/20' : 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20'}`}>
+                                        {repair.location === 'Terreno' ? <Car size={10} /> : <Home size={10} />}
+                                        {repair.location || 'Local'}
+                                    </span>
                                 </div>
+
+                                {/* 👇 SECCIÓN DE FECHAS (INICIO Y FIN) */}
+                                <div className="flex flex-wrap gap-3 mt-1">
+                                    {repair.start_date && (
+                                        <div className="flex items-center gap-1.5 text-[10px] text-brand-cyan bg-brand-cyan/5 px-2 py-0.5 rounded border border-brand-cyan/10 font-bold uppercase">
+                                            <Calendar size={10} />
+                                            INI: {new Date(repair.start_date).toLocaleString('es-CL', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })}
+                                        </div>
+                                    )}
+                                    {repair.estimated_end_date && (
+                                        <div className="flex items-center gap-1.5 text-[10px] text-purple-400 bg-purple-500/10 px-2 py-0.5 rounded border border-purple-500/20 font-bold uppercase">
+                                            <Clock size={10} />
+                                            FIN: {new Date(repair.estimated_end_date).toLocaleString('es-CL', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })}
+                                        </div>
+                                    )}
+                                </div>
+
                                 <p className="text-slate-400 text-sm line-clamp-1 italic">"{repair.problem}"</p>
                             </div>
                             <div className="flex items-center gap-6 text-sm text-slate-500 min-w-[200px] justify-end">
-                                <div className="text-right"><div className="flex items-center justify-end gap-2 text-xs mb-1"><Calendar size={12} /><span>{repair.date}</span></div><div className={`flex items-center justify-end gap-1 font-bold ${repair.total_cost > 0 ? 'text-brand-cyan' : 'text-slate-600'}`}><DollarSign size={14} /><span>{repair.total_cost > 0 ? Number(repair.total_cost).toLocaleString('es-CL') : 'Pendiente'}</span></div></div>
+                                <div className="text-right">
+                                    <div className={`flex items-center justify-end gap-1 font-bold ${repair.total_cost > 0 ? 'text-brand-cyan' : 'text-slate-600'}`}><DollarSign size={14} /><span>{repair.total_cost > 0 ? Number(repair.total_cost).toLocaleString('es-CL') : 'Pendiente'}</span></div>
+                                </div>
                                 <div className="flex gap-2">
                                     <button onClick={(e) => { e.stopPropagation(); generateOrderPDF(repair); }} className="p-2 bg-white/5 hover:bg-red-500/20 rounded-xl text-slate-400 hover:text-red-400 transition-all" title="Descargar Orden PDF"><FileText size={18} /></button>
                                     <button onClick={(e) => handleShareLink(e, repair.id)} className="p-2 bg-white/5 hover:bg-brand-cyan/20 rounded-xl text-slate-400 hover:text-brand-cyan transition-all" title="Copiar Link de Seguimiento"><Share2 size={18} /></button>

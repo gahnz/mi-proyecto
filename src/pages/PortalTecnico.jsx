@@ -4,15 +4,13 @@ import {
   ClipboardList, Search, LogOut, User, ChevronRight, Save, X, 
   Hash, Printer, PenTool, Camera, Image as ImageIcon, Loader2, FileText,
   RefreshCw, Eraser, MapPin, Phone, MessageCircle, PlayCircle, CheckCircle2,
-  Send, Clock 
+  Send, Clock, Calendar, Archive, LayoutList, Home, Car 
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "../supabase/client";
 import { useNavigate } from "react-router-dom";
 import { useWorkOrders } from "../hooks/useWorkOrders";
-// import { generateOrderPDF } from "../utils/pdfGenerator"; // YA NO SE USA AQUÍ
 import { getChileTime } from "../utils/time";
-// 👇 IMPORTAMOS LA LIBRERÍA DE COMPRESIÓN
 import imageCompression from 'browser-image-compression';
 
 export default function PortalTecnico() {
@@ -25,6 +23,9 @@ export default function PortalTecnico() {
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  
+  // ESTADO PARA LAS PESTAÑAS
+  const [activeTab, setActiveTab] = useState("active");
 
   const sigPad = useRef(null); 
   const [showSigPad, setShowSigPad] = useState(false);
@@ -54,7 +55,7 @@ export default function PortalTecnico() {
     toast.success("Lista actualizada");
   };
 
-  const myOrders = orders.filter(order => {
+  const filteredOrders = orders.filter(order => {
     const techNameOrder = (order.technician || "").toLowerCase().trim();
     const techNameUser = (currentUser?.full_name || "").toLowerCase().trim();
     const isAssigned = currentUser?.role === 'admin' ? true : techNameOrder === techNameUser;
@@ -64,8 +65,10 @@ export default function PortalTecnico() {
         (order.device || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
         (order.id || "").toLowerCase().includes(searchTerm.toLowerCase());
 
-    const isActive = ['En cola', 'Trabajando'].includes(order.status);
-    return isAssigned && matchesSearch && isActive;
+    const isActiveStatus = ['En cola', 'Trabajando'].includes(order.status);
+    const matchesTab = activeTab === "active" ? isActiveStatus : !isActiveStatus;
+
+    return isAssigned && matchesSearch && matchesTab;
   });
 
   const openOrderModal = (order) => {
@@ -102,57 +105,39 @@ export default function PortalTecnico() {
     });
   };
 
-  // 🔥 FUNCIÓN DE SUBIDA DE IMAGEN OPTIMIZADA
   const handleImageUpload = async (event, field) => {
     const imageFile = event.target.files[0];
     if (!imageFile) return;
 
     setUploading(true);
 
-    // Opciones de compresión
     const options = {
-      maxSizeMB: 1,          // Máximo 1MB
-      maxWidthOrHeight: 1920, // Máxima resolución Full HD
-      useWebWorker: true,    // Usa un hilo separado para no congelar la app
-      fileType: 'image/jpeg' // Asegura formato JPEG
+      maxSizeMB: 1, maxWidthOrHeight: 1920, useWebWorker: true, fileType: 'image/jpeg' 
     };
 
     try {
         toast.loading("Comprimiendo imagen...", { id: "upload-toast" });
-        
-        // 1. Comprimir la imagen
         const compressedFile = await imageCompression(imageFile, options);
-        
         toast.loading("Subiendo a la nube...", { id: "upload-toast" });
 
-        // 2. Preparar nombre de archivo y ruta
-        const fileExt = 'jpg'; // Siempre será jpg por la compresión
+        const fileExt = 'jpg'; 
         const fileName = `${selectedOrder.id}_${field}_${Date.now()}.${fileExt}`;
-        const filePath = `evidencia/${fileName}`; // Guardar en subcarpeta 'evidencia'
+        const filePath = `evidencia/${fileName}`; 
 
-        // 3. Subir a Supabase
         const { error: uploadError } = await supabase.storage
             .from('repair-images')
-            .upload(filePath, compressedFile, {
-                cacheControl: '3600',
-                upsert: false
-            });
+            .upload(filePath, compressedFile, { cacheControl: '3600', upsert: false });
 
         if (uploadError) throw uploadError;
 
-        // 4. Obtener URL pública
-        const { data: { publicUrl } } = supabase.storage
-            .from('repair-images')
-            .getPublicUrl(filePath);
+        const { data: { publicUrl } } = supabase.storage.from('repair-images').getPublicUrl(filePath);
 
-        // 5. Actualizar formulario
         setEditForm(prev => ({ ...prev, [field]: publicUrl }));
-        
-        toast.success("Imagen optimizada y guardada exitosamente", { id: "upload-toast" });
+        toast.success("Imagen guardada", { id: "upload-toast" });
 
     } catch (error) {
-        console.error("Error en proceso de imagen:", error);
-        toast.error("Error al procesar la imagen: " + error.message, { id: "upload-toast" });
+        console.error("Error:", error);
+        toast.error("Error al procesar la imagen", { id: "upload-toast" });
     } finally {
         setUploading(false);
     }
@@ -176,7 +161,7 @@ export default function PortalTecnico() {
         try {
             const signatureDataUrl = sigPad.current.getCanvas().toDataURL('image/png');
             const signatureBlob = dataURLtoBlob(signatureDataUrl);
-            const fileName = `firmas/${selectedOrder.id}_signature_${Date.now()}.png`; // Guardar en subcarpeta 'firmas'
+            const fileName = `firmas/${selectedOrder.id}_signature_${Date.now()}.png`; 
             const { error: uploadError } = await supabase.storage.from('repair-images').upload(fileName, signatureBlob);
             if (uploadError) throw uploadError;
             const { data: { publicUrl } } = supabase.storage.from('repair-images').getPublicUrl(fileName);
@@ -194,7 +179,7 @@ export default function PortalTecnico() {
     };
 
     const promise = updateOrder(selectedOrder.db_id, payload);
-    const successMessage = forceStatus ? '¡Informe enviado a revisión!' : '¡Avance guardado correctamente!';
+    const successMessage = forceStatus ? '¡Informe enviado a revisión!' : '¡Avance guardado!';
 
     toast.promise(promise, {
         loading: 'Procesando...',
@@ -208,6 +193,8 @@ export default function PortalTecnico() {
   const getStatusColor = (status) => {
     if (status === 'En cola') return 'text-blue-400 bg-blue-400/10 border-blue-400/20';
     if (status === 'Trabajando') return 'text-brand-purple bg-brand-purple/10 border-brand-purple/20';
+    if (status === 'Revisión del Coordinador') return 'text-amber-400 bg-amber-400/10 border-amber-400/20';
+    if (status === 'Finalizado y Pagado') return 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20';
     return 'text-slate-400 bg-slate-800 border-white/5';
   };
 
@@ -230,22 +217,46 @@ export default function PortalTecnico() {
             <button onClick={handleLogout} className="p-2 bg-slate-800 rounded-full text-slate-400 hover:text-white hover:bg-red-500/20 transition-all"><LogOut size={18} /></button>
           </div>
         </div>
-        <div className="relative">
+        
+        {/* BUSCADOR */}
+        <div className="relative mb-4">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={16} />
           <input type="text" placeholder="Buscar orden..." className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2.5 pl-10 pr-4 text-white text-sm outline-none focus:border-brand-purple transition-all" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+        </div>
+
+        {/* PESTAÑAS DE NAVEGACIÓN */}
+        <div className="grid grid-cols-2 gap-2 bg-slate-950 p-1 rounded-xl border border-white/5">
+            <button 
+                onClick={() => setActiveTab('active')}
+                className={`flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-bold uppercase transition-all ${activeTab === 'active' ? 'bg-slate-800 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
+            >
+                <LayoutList size={14} /> Activos
+            </button>
+            <button 
+                onClick={() => setActiveTab('history')}
+                className={`flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-bold uppercase transition-all ${activeTab === 'history' ? 'bg-slate-800 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
+            >
+                <Archive size={14} /> Historial
+            </button>
         </div>
       </div>
 
       {/* LISTA DE TRABAJOS */}
       <div className="p-4 space-y-4">
-        <h2 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Mis Asignaciones ({myOrders.length})</h2>
+        <h2 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2 flex items-center justify-between">
+            <span>{activeTab === 'active' ? 'Mis Asignaciones' : 'Trabajos Finalizados'} ({filteredOrders.length})</span>
+        </h2>
         
-        {myOrders.length === 0 ? ( 
-            <div className="text-center py-20 text-slate-300 text-sm font-medium">No tienes órdenes activas.<br/>¡Buen trabajo! 🎉</div> 
+        {filteredOrders.length === 0 ? ( 
+            <div className="text-center py-20 text-slate-500 text-sm font-medium flex flex-col items-center gap-2 opacity-50">
+                <ClipboardList size={32} />
+                <span>{activeTab === 'active' ? "¡Todo limpio! No hay pendientes." : "Sin historial reciente."}</span>
+            </div> 
         ) : (
-            myOrders.map(order => (
-            <div key={order.db_id} onClick={() => openOrderModal(order)} className="bg-slate-900 border border-white/5 rounded-2xl p-4 active:scale-[0.98] transition-all cursor-pointer hover:border-brand-purple/30 shadow-lg relative overflow-hidden group">
-                <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${order.status === 'Trabajando' ? 'bg-brand-purple animate-pulse shadow-[0_0_10px_#a855f7]' : 'bg-slate-700'}`}></div>
+            filteredOrders.map(order => (
+            <div key={order.db_id} onClick={() => openOrderModal(order)} className={`border border-white/5 rounded-2xl p-4 active:scale-[0.98] transition-all cursor-pointer shadow-lg relative overflow-hidden group ${activeTab === 'active' ? 'bg-slate-900 hover:border-brand-purple/30' : 'bg-slate-900/50 hover:bg-slate-900 opacity-80 hover:opacity-100'}`}>
+                {/* Indicador lateral de estado */}
+                <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${order.status === 'Trabajando' ? 'bg-brand-purple animate-pulse shadow-[0_0_10px_#a855f7]' : (activeTab === 'history' ? 'bg-slate-700' : 'bg-blue-500')}`}></div>
                 
                 <div className="flex justify-between items-start mb-2 pl-3">
                     <span className="text-[10px] font-black text-slate-500 bg-slate-950 px-2 py-1 rounded-md border border-white/5 tracking-wider">{order.id}</span>
@@ -255,14 +266,33 @@ export default function PortalTecnico() {
                 <div className="pl-3 pr-2">
                     <h3 className="text-white font-bold text-lg leading-tight mb-1">{order.device}</h3>
                     
+                    {/* ZONA DE INFO: FECHA + MODALIDAD */}
+                    <div className="flex flex-wrap gap-2 mb-2">
+                        {/* 1. Fecha Agenda (UTC Fix) */}
+                        {order.start_date && (
+                            <div className="flex items-center gap-2 text-xs font-bold text-brand-cyan bg-brand-cyan/5 px-2 py-1 rounded-md border border-brand-cyan/10 w-fit">
+                                <Calendar size={12} />
+                                <span className="uppercase tracking-wide">
+                                    {new Date(order.start_date).toLocaleString('es-CL', {
+                                        weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'UTC'
+                                    })} hrs
+                                </span>
+                            </div>
+                        )}
+
+                        {/* 2. Modalidad (Local / Terreno) */}
+                        <div className={`flex items-center gap-2 text-xs font-bold px-2 py-1 rounded-md border w-fit ${order.location === 'Terreno' ? 'text-amber-400 bg-amber-400/10 border-amber-400/20' : 'text-indigo-400 bg-indigo-500/10 border-indigo-500/20'}`}>
+                            {order.location === 'Terreno' ? <Car size={12} /> : <Home size={12} />}
+                            <span className="uppercase tracking-wide">{order.location || 'Local'}</span>
+                        </div>
+                    </div>
+
                     <div className="flex items-start gap-2 mb-3 text-slate-300">
                         <MapPin size={16} className="text-rose-400 mt-0.5 shrink-0" />
                         <div className="leading-tight">
                             <span className="text-xs block font-medium">{order.customer_address || "Sin dirección"}</span>
                             {order.customer_commune && (
-                                <span className="text-[10px] font-black text-brand-purple uppercase tracking-widest mt-0.5 block">
-                                    {order.customer_commune}
-                                </span>
+                                <span className="text-[10px] font-black text-brand-purple uppercase tracking-widest mt-0.5 block">{order.customer_commune}</span>
                             )}
                         </div>
                     </div>
@@ -270,17 +300,19 @@ export default function PortalTecnico() {
                     <p className="text-slate-400 text-xs line-clamp-2 mb-3 bg-white/5 p-2 rounded-lg italic border border-white/5">"{order.problem}"</p>
                     
                     <div className="flex items-center justify-between mt-4 border-t border-white/5 pt-3">
-                        {order.status === 'En cola' ? (
-                            <button 
-                                onClick={(e) => handleLlegueAuto(e, order)}
-                                className="bg-brand-cyan/10 text-brand-cyan border border-brand-cyan/30 hover:bg-brand-cyan hover:text-black px-4 py-2 rounded-lg text-xs font-bold flex items-center gap-2 transition-all shadow-lg shadow-brand-cyan/10 hover:scale-105 active:scale-95"
-                            >
-                                <MapPin size={14} /> LLEGUÉ
-                            </button>
+                        {/* Botones de Acción */}
+                        {activeTab === 'active' ? (
+                            order.status === 'En cola' ? (
+                                <button onClick={(e) => handleLlegueAuto(e, order)} className="bg-brand-cyan/10 text-brand-cyan border border-brand-cyan/30 hover:bg-brand-cyan hover:text-black px-4 py-2 rounded-lg text-xs font-bold flex items-center gap-2 transition-all shadow-lg shadow-brand-cyan/10 hover:scale-105 active:scale-95">
+                                    <MapPin size={14} /> LLEGUÉ
+                                </button>
+                            ) : (
+                                <div className="text-xs text-brand-purple font-bold flex items-center gap-1 animate-pulse bg-brand-purple/10 px-3 py-1 rounded-full border border-brand-purple/20">
+                                    <Clock size={14} /> TRABAJANDO...
+                                </div>
+                            )
                         ) : (
-                            <div className="text-xs text-brand-purple font-bold flex items-center gap-1 animate-pulse bg-brand-purple/10 px-3 py-1 rounded-full border border-brand-purple/20">
-                                <Clock size={14} /> TRABAJANDO...
-                            </div>
+                            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Ver Detalles</span>
                         )}
 
                         <div className="flex gap-2">
@@ -303,34 +335,31 @@ export default function PortalTecnico() {
             </div>
 
             <div className="flex-1 overflow-y-auto p-5 space-y-6 custom-scrollbar">
-              
               {/* DATOS DEL CLIENTE EN MODAL */}
               <div className="bg-slate-950 p-4 rounded-xl border border-white/5 space-y-3">
-                 <label className="text-[10px] font-black text-brand-purple uppercase tracking-widest mb-1 flex items-center gap-2">
-                    <User size={12} /> Cliente
-                 </label>
+                 <label className="text-[10px] font-black text-brand-purple uppercase tracking-widest mb-1 flex items-center gap-2"><User size={12} /> Cliente</label>
                  <div>
                     <h3 className="text-white font-bold text-lg leading-tight">{selectedOrder.customer}</h3>
                     <div className="flex flex-col gap-2 mt-3">
                         <div className="flex items-start gap-3 text-slate-400 text-xs">
                             <MapPin size={14} className="text-brand-cyan mt-0.5 shrink-0" />
                             <div className="leading-tight w-full">
-                                <a href={`https://www.google.com/maps/search/?api=1&query={encodeURIComponent(selectedOrder.customer_address || "")}`} target="_blank" rel="noopener noreferrer" className="hover:text-white hover:underline block mb-1">
+                                {/* ENLACE GOOGLE MAPS CORREGIDO: URL OFICIAL */}
+                                <a 
+                                    href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent((selectedOrder.customer_address || "") + " " + (selectedOrder.customer_commune || ""))}`} 
+                                    target="_blank" 
+                                    rel="noopener noreferrer" 
+                                    className="hover:text-white hover:underline block mb-1"
+                                >
                                     {selectedOrder.customer_address || "Sin dirección registrada"}
                                 </a>
-                                {selectedOrder.customer_commune && (
-                                    <span className="text-[10px] font-black text-brand-purple uppercase tracking-widest bg-brand-purple/10 px-2 py-0.5 rounded inline-block">
-                                        {selectedOrder.customer_commune}
-                                    </span>
-                                )}
+                                {selectedOrder.customer_commune && <span className="text-[10px] font-black text-brand-purple uppercase tracking-widest bg-brand-purple/10 px-2 py-0.5 rounded inline-block">{selectedOrder.customer_commune}</span>}
                             </div>
                         </div>
                         <div className="flex items-center gap-3 text-slate-400 text-xs">
                             <Phone size={14} className="text-brand-cyan shrink-0" />
                             <span>{selectedOrder.customer_phone || "Sin teléfono"}</span>
-                            {selectedOrder.customer_phone && (
-                                <a href={`https://wa.me/${cleanPhone(selectedOrder.customer_phone)}`} target="_blank" rel="noopener noreferrer" className="bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500 hover:text-white px-2 py-1 rounded-md flex items-center gap-1 transition-all ml-auto font-bold border border-emerald-500/30"><MessageCircle size={12} /> WhatsApp</a>
-                            )}
+                            {selectedOrder.customer_phone && <a href={`https://wa.me/${cleanPhone(selectedOrder.customer_phone)}`} target="_blank" rel="noopener noreferrer" className="bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500 hover:text-white px-2 py-1 rounded-md flex items-center gap-1 transition-all ml-auto font-bold border border-emerald-500/30"><MessageCircle size={12} /> WhatsApp</a>}
                         </div>
                     </div>
                  </div>
@@ -339,7 +368,7 @@ export default function PortalTecnico() {
               {/* GESTIÓN DE ESTADO */}
               <div className="space-y-2">
                 <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Estado de la Orden</label>
-                {editForm.status === 'En cola' ? (
+                {editForm.status === 'En cola' && activeTab === 'active' ? (
                     <button onClick={(e) => handleLlegueAuto(e, null)} className="w-full bg-brand-cyan/20 border border-brand-cyan/50 text-brand-cyan hover:bg-brand-cyan hover:text-black py-4 rounded-xl flex items-center justify-center gap-3 transition-all group shadow-[0_0_15px_rgba(6,182,212,0.3)] animate-pulse active:scale-95">
                         <PlayCircle size={24} className="group-hover:scale-110 transition-transform" /><span className="font-black text-lg uppercase tracking-wider">¡Llegué! Comenzar</span>
                     </button>
@@ -372,8 +401,8 @@ export default function PortalTecnico() {
               {/* DATOS TÉCNICOS & OBS */}
               <div className="grid grid-cols-2 gap-4 bg-slate-950 p-4 rounded-xl border border-white/5">
                 <div className="col-span-2 text-[10px] font-black text-brand-purple uppercase tracking-widest mb-1 flex items-center gap-2"><Printer size={12} /> Datos Técnicos</div>
-                <div><label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">N° Serie</label><div className="relative"><Hash size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" /><input className="w-full bg-slate-900 border border-white/10 rounded-lg py-2.5 pl-9 pr-2 text-white text-xs font-mono outline-none focus:border-brand-purple" placeholder="S/N..." value={editForm.serialNumber} onChange={(e) => setEditForm({...editForm, serialNumber: e.target.value})} /></div></div>
-                <div><label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Contador</label><div className="relative"><ClipboardList size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" /><input className="w-full bg-slate-900 border border-white/10 rounded-lg py-2.5 pl-9 pr-2 text-white text-xs font-mono outline-none focus:border-brand-purple" placeholder="12345..." value={editForm.pageCount} onChange={(e) => setEditForm({...editForm, pageCount: e.target.value})} /></div></div>
+                <div><label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">N° Serie</label><input className="w-full bg-slate-900 border border-white/10 rounded-lg py-2.5 px-3 text-white text-xs font-mono outline-none focus:border-brand-purple" placeholder="S/N..." value={editForm.serialNumber} onChange={(e) => setEditForm({...editForm, serialNumber: e.target.value})} /></div>
+                <div><label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Contador</label><input className="w-full bg-slate-900 border border-white/10 rounded-lg py-2.5 px-3 text-white text-xs font-mono outline-none focus:border-brand-purple" placeholder="12345..." value={editForm.pageCount} onChange={(e) => setEditForm({...editForm, pageCount: e.target.value})} /></div>
               </div>
 
               <div className="space-y-4">
