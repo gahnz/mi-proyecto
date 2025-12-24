@@ -4,7 +4,7 @@ import { supabase } from "../supabase/client";
 import { 
     CheckCircle2, Wrench, FileText, Star, 
     Smartphone, Laptop, AlertTriangle, Clock, 
-    Activity, ChevronRight, Hash, Package, Receipt
+    Activity, ChevronRight, Hash, Package, Receipt, Lock // 👈 Importamos Lock para el icono de bloqueo
 } from "lucide-react";
 import { generateOrderPDF } from "../utils/pdfGenerator";
 
@@ -54,7 +54,7 @@ export default function Tracker() {
                     problem: item.reported_failure,
                     date: new Date(item.created_at).toLocaleDateString('es-CL'),
                     customer_address: item.customers?.address,
-                    customer_commune: item.customers?.comuna, // Corrección: comuna en español
+                    customer_commune: item.customers?.comuna,
                     customer_phone: item.customers?.phone
                 });
             }
@@ -64,7 +64,6 @@ export default function Tracker() {
         if (orderId) fetchOrder();
     }, [orderId]);
 
-    // 🔥 LOGICA ORIGINAL DE PASOS (1-4)
     const getStatusStep = (status) => {
         const steps = {
             "En cola": 1,
@@ -79,19 +78,16 @@ export default function Tracker() {
         return steps[status] || 1;
     };
 
-    // 🔥 LOGICA VISUAL (Colores e Iconos Bonitos)
     const getStatusVisuals = (status) => {
         const visuals = {
             "En cola": { color: "text-blue-400", bg: "bg-blue-500", icon: <Clock size={40} />, label: "En Espera" },
             "Trabajando": { color: "text-brand-purple", bg: "bg-brand-purple", icon: <Wrench size={40} className="animate-spin-slow" />, label: "En Reparación" },
             
-            // Grupo Paso 3
             "Revisión del Coordinador": { color: "text-amber-400", bg: "bg-amber-500", icon: <Activity size={40} />, label: "Control de Calidad" },
             "Notificado y no pagado": { color: "text-emerald-400", bg: "bg-emerald-500", icon: <CheckCircle2 size={40} />, label: "Listo para Retiro" },
             "Pagado y no retirado": { color: "text-emerald-400", bg: "bg-emerald-500", icon: <Package size={40} />, label: "Pagado - Por Retirar" },
             "Retirado y no pagado": { color: "text-orange-400", bg: "bg-orange-500", icon: <AlertTriangle size={40} />, label: "Retirado (Pendiente Pago)" },
             
-            // Grupo Paso 4
             "Finalizado y Pagado": { color: "text-emerald-400", bg: "bg-emerald-500", icon: <Star size={40} fill="currentColor" />, label: "Entregado" },
             "Cancelado": { color: "text-rose-400", bg: "bg-rose-500", icon: <AlertTriangle size={40} />, label: "Cancelado" }
         };
@@ -117,7 +113,10 @@ export default function Tracker() {
     );
 
     const currentStep = getStatusStep(order.status); 
-    const visualInfo = getStatusVisuals(order.status); 
+    const visualInfo = getStatusVisuals(order.status);
+    
+    // 🔥 LÓGICA DE BLOQUEO DE DESCARGAS
+    const canDownload = !["En cola", "Trabajando"].includes(order.status);
 
     return (
         <div className="min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-brand-purple selection:text-white pb-20 relative overflow-x-hidden">
@@ -206,11 +205,11 @@ export default function Tracker() {
                     </div>
                 </div>
 
-                {/* SECCIÓN DE ACCIONES */}
+                {/* SECCIÓN DE ACCIONES (DESCARGAS BLOQUEADAS/DESBLOQUEADAS) */}
                 <div className="px-4 space-y-3">
                     
-                    {/* 🔥 BOTÓN DESCARGAR BOLETA/FACTURA (NUEVO) */}
-                    {order.doc_url && (
+                    {/* BOTÓN DESCARGAR BOLETA/FACTURA (Solo si canDownload es TRUE y existe url) */}
+                    {canDownload && order.doc_url && (
                         <a 
                             href={order.doc_url}
                             target="_blank"
@@ -222,13 +221,25 @@ export default function Tracker() {
                         </a>
                     )}
 
-                    {/* BOTÓN DESCARGAR INFORME */}
+                    {/* BOTÓN DESCARGAR INFORME (Deshabilitado si !canDownload) */}
                     <button 
-                        onClick={() => generateOrderPDF(order)}
-                        className="w-full group bg-slate-800 hover:bg-slate-700 text-slate-200 py-4 rounded-2xl font-bold text-sm flex items-center justify-between px-6 transition-all border border-white/10 hover:border-white/20 active:scale-[0.98]"
+                        onClick={() => canDownload && generateOrderPDF(order)}
+                        disabled={!canDownload}
+                        className={`w-full group py-4 rounded-2xl font-bold text-sm flex items-center justify-between px-6 transition-all border ${
+                            canDownload 
+                            ? "bg-slate-800 hover:bg-slate-700 text-slate-200 border-white/10 hover:border-white/20 active:scale-[0.98] cursor-pointer" 
+                            : "bg-slate-900/50 text-slate-600 border-white/5 cursor-not-allowed"
+                        }`}
                     >
-                        <span className="flex items-center gap-3"><FileText size={18} className="text-brand-cyan" /> Informe Técnico PDF</span>
-                        <ChevronRight size={16} className="text-slate-500 group-hover:translate-x-1 transition-transform" />
+                        <span className="flex items-center gap-3">
+                            <FileText size={18} className={canDownload ? "text-brand-cyan" : "text-slate-600"} /> 
+                            {canDownload ? "Informe Técnico PDF" : "Informe en proceso..."}
+                        </span>
+                        {canDownload ? (
+                             <ChevronRight size={16} className="text-slate-500 group-hover:translate-x-1 transition-transform" />
+                        ) : (
+                            <Lock size={16} className="text-slate-700" />
+                        )}
                     </button>
 
                     {/* BOTÓN GOOGLE REVIEW */}
