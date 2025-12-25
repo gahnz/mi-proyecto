@@ -2,8 +2,11 @@ import { useState, useEffect, useCallback } from "react";
 import { supabase } from "../supabase/client";
 import { toast } from "sonner";
 
-export function useCashFlow() {
+// Agregamos paginación por defecto: página 1, 20 items
+export function useCashFlow(page = 1, pageSize = 20, selectedMonth = new Date().toISOString().slice(0, 7)) {
   const [movements, setMovements] = useState([]);
+  const [totalCount, setTotalCount] = useState(0); // Nuevo total
+  const [stats, setStats] = useState(null); // Nuevas estadísticas
   const [loading, setLoading] = useState(true);
 
   // Mapeo incluyendo docUrl e items
@@ -19,35 +22,56 @@ export function useCashFlow() {
     deliveryBy: m.delivery_by,
     status: m.status,
     docUrl: m.doc_url,
-    items: m.items || [] // 👈 NUEVO: Mapear items
+    items: m.items || [] 
   });
 
-  const fetchMovements = useCallback(async () => {
+  const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const { data, error } = await supabase
+      // 1. Cargar Estadísticas Rápidas (RPC)
+      const { data: statsData, error: statsError } = await supabase.rpc('get_monthly_cashflow_stats', { month_date: selectedMonth });
+      if (statsError) throw statsError;
+      setStats(statsData);
+
+      // 2. Cargar Movimientos Paginados
+      const from = (page - 1) * pageSize;
+      const to = from + pageSize - 1;
+      
+      // Filtramos por el mes seleccionado para la tabla también
+      const startDate = `${selectedMonth}-01`;
+      const endDate = `${selectedMonth}-31`;
+
+      const { data, count, error } = await supabase
         .from("cash_flow")
-        .select("*")
+        .select("*", { count: 'exact' })
+        .gte('date', startDate)
+        .lte('date', endDate)
         .order("date", { ascending: false })
-        .order("created_at", { ascending: false });
+        .order("created_at", { ascending: false })
+        .range(from, to);
 
       if (error) throw error;
+      
       setMovements(data.map(mapMovement) || []);
+      setTotalCount(count);
+
     } catch (error) {
       console.error("Error cargando flujo:", error);
-      toast.error("Error al cargar movimientos");
+      toast.error("Error al cargar datos");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [page, pageSize, selectedMonth]);
 
   useEffect(() => {
-    fetchMovements();
-  }, [fetchMovements]);
+    fetchData();
+  }, [fetchData]);
+
+  // --- MÉTODOS CRUD (Sin cambios mayores, solo refrescar al final) ---
 
   const addMovement = async (movement) => {
       try {
-        const { data, error } = await supabase.from("cash_flow").insert([{
+        const { error } = await supabase.from("cash_flow").insert([{
             date: movement.date,
             type: movement.type,
             category: movement.category,
@@ -62,19 +86,17 @@ export function useCashFlow() {
             status: movement.status || 'confirmed',
             delivery_by: movement.deliveryBy,
             doc_url: movement.docUrl,
-            items: movement.items // 👈 NUEVO: Guardar items
-        }]).select();
+            items: movement.items 
+        }]);
         
         if (error) throw error;
-        const newMov = mapMovement(data[0]);
-        setMovements((prev) => [newMov, ...prev]);
-        return newMov;
+        fetchData(); // Recargar todo (stats + tabla)
       } catch(err) { throw err; }
   };
 
   const updateMovement = async (id, updatedFields) => {
       try {
-        const { data, error } = await supabase.from("cash_flow").update({
+        const { error } = await supabase.from("cash_flow").update({
             date: updatedFields.date,
             type: updatedFields.type,
             category: updatedFields.category,
@@ -89,13 +111,11 @@ export function useCashFlow() {
             status: updatedFields.status,
             delivery_by: updatedFields.deliveryBy,
             doc_url: updatedFields.docUrl,
-            items: updatedFields.items // 👈 NUEVO: Actualizar items
-        }).eq("id", id).select();
+            items: updatedFields.items
+        }).eq("id", id);
 
         if (error) throw error;
-        const updatedMov = mapMovement(data[0]);
-        setMovements((prev) => prev.map((m) => (m.id === id ? updatedMov : m)));
-        return updatedMov;
+        fetchData(); // Recargar
       } catch(err) { throw err; }
   };
   
@@ -103,7 +123,7 @@ export function useCashFlow() {
       try {
         const { error } = await supabase.from("cash_flow").delete().eq("id", id);
         if (error) throw error;
-        setMovements((prev) => prev.filter((m) => m.id !== id));
+        fetchData(); // Recargar
       } catch(err) { throw err; }
   };
 
@@ -111,33 +131,24 @@ export function useCashFlow() {
     try {
       const fileExt = file.name.split('.').pop();
       const fileName = `voucher_${id}_${Date.now()}.${fileExt}`;
-      const { error: uploadError } = await supabase.storage
-        .from('finance-docs')
-        .upload(fileName, file);
-
+      const { error: uploadError } = await supabase.storage.from('finance-docs').upload(fileName, file);
       if (uploadError) throw uploadError;
-
-      const { data: { publicUrl } } = supabase.storage
-        .from('finance-docs')
-        .getPublicUrl(fileName);
-
-      const { data, error: dbError } = await supabase
-        .from('cash_flow')
-        .update({ doc_url: publicUrl })
-        .eq('id', id)
-        .select();
-
-      if (dbError) throw dbError;
-
-      const updatedMov = mapMovement(data[0]);
-      setMovements(prev => prev.map(m => m.id === id ? updatedMov : m));
-      
+      const { data: { publicUrl } } = supabase.storage.from('finance-docs').getPublicUrl(fileName);
+      await supabase.from('cash_flow').update({ doc_url: publicUrl }).eq('id', id);
+      fetchData(); // Recargar
       return publicUrl;
-    } catch (error) {
-      console.error("Error subiendo documento:", error);
-      throw error;
-    }
+    } catch (error) { console.error(error); throw error; }
   };
 
-  return { movements, loading, addMovement, updateMovement, deleteMovement, uploadDocument, refresh: fetchMovements };
+  return { 
+    movements, 
+    stats, // 👈 Ahora devolvemos estadísticas calculadas
+    totalCount, 
+    loading, 
+    addMovement, 
+    updateMovement, 
+    deleteMovement, 
+    uploadDocument, 
+    refresh: fetchData 
+  };
 }

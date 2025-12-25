@@ -5,16 +5,25 @@ import {
     Info, Calculator, Landmark, Pencil, CreditCard, Banknote, Percent,
     ShoppingBag, X, AlertTriangle, PackageMinus, Store,
     Lock, Unlock, CheckCircle, Clock, Truck, 
-    Eye, UploadCloud, FileCheck, Hash // 👈 Importamos Hash para el icono de ID
+    Eye, UploadCloud, FileCheck, Hash, ChevronLeft, ChevronRight
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "../supabase/client";
 import { useCashFlow } from "../hooks/useCashFlow";
 import { useInventory } from "../hooks/useInventory";
 import { PAYMENT_METHODS, TAX_CATEGORIES, DOCUMENT_TYPES, WAREHOUSES } from "../constants";
+import { getChileTime } from "../utils/time";
+
+const DELIVERY_COST = 3570;
 
 const FlujoCaja = () => {
-    const { movements, loading, addMovement, updateMovement, deleteMovement, uploadDocument } = useCashFlow();
+    // 1. Configuración de Paginación y Mes
+    const [page, setPage] = useState(1);
+    const PAGE_SIZE = 20;
+    const [filterMonth, setFilterMonth] = useState(new Date().toISOString().slice(0, 7));
+
+    // 2. Hook actualizado
+    const { movements, stats, totalCount, loading, addMovement, updateMovement, deleteMovement, uploadDocument } = useCashFlow(page, PAGE_SIZE, filterMonth);
     const { inventory, updateItem } = useInventory();
 
     const [technicians, setTechnicians] = useState([]);
@@ -23,19 +32,14 @@ const FlujoCaja = () => {
     const [filterType, setFilterType] = useState("Todos");
     const [searchTerm, setSearchTerm] = useState("");
     const [editingId, setEditingId] = useState(null);
-    const [filterMonth, setFilterMonth] = useState(new Date().toISOString().slice(0, 7));
     const [uploadingId, setUploadingId] = useState(null);
     
     // UI Helpers
     const [itemSearchTerm, setItemSearchTerm] = useState("");
     const [showItemResults, setShowItemResults] = useState(false);
     const [selectedItemName, setSelectedItemName] = useState(""); 
-
-    // Delete Modal State
     const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
     const [itemToDelete, setItemToDelete] = useState(null);
-
-    // Estados para detalle de items
     const [viewingItems, setViewingItems] = useState(null); 
     const [isItemsModalOpen, setIsItemsModalOpen] = useState(false);
 
@@ -62,6 +66,8 @@ const FlujoCaja = () => {
         docUrl: ""
     });
 
+    const totalPages = Math.ceil((totalCount || 0) / PAGE_SIZE);
+
     useEffect(() => {
         const fetchTechnicians = async () => {
             const { data } = await supabase
@@ -76,50 +82,30 @@ const FlujoCaja = () => {
     const handleFileUpload = async (e, movementId) => {
         const file = e.target.files[0];
         if (!file) return;
-
         setUploadingId(movementId);
-        const promise = uploadDocument(movementId, file);
-
-        toast.promise(promise, {
-            loading: 'Subiendo documento...',
-            success: () => {
-                setUploadingId(null);
-                return 'Documento adjuntado correctamente 📎';
-            },
-            error: (err) => {
-                setUploadingId(null);
-                return `Error: ${err.message}`;
-            }
+        toast.promise(uploadDocument(movementId, file), {
+            loading: 'Subiendo...',
+            success: () => { setUploadingId(null); return 'Listo 📎'; },
+            error: (err) => { setUploadingId(null); return `Error: ${err.message}`; }
         });
     };
 
     const handleStockRestoration = async (itemsToRestore) => {
         if (!itemsToRestore || !Array.isArray(itemsToRestore) || itemsToRestore.length === 0) return;
-
         const promises = itemsToRestore.map(item => {
             if (item.type === 'Servicio') return Promise.resolve();
             return supabase.rpc('restore_inventory_stock', {
-                item_id: parseInt(item.id, 10),
-                quantity: parseInt(item.quantity || 1, 10),
-                warehouse_name: "Bodega Local" 
+                item_id: parseInt(item.id, 10), quantity: parseInt(item.quantity || 1, 10), warehouse_name: "Bodega Local" 
             });
         });
-
-        try {
-            await Promise.all(promises);
-            toast.info("📦 Stock devuelto a Bodega Local");
-        } catch (error) {
-            console.error("Error restaurando stock:", error);
-            toast.error("Error al devolver stock al inventario");
-        }
+        try { await Promise.all(promises); toast.info("📦 Stock devuelto"); } 
+        catch (error) { toast.error("Error al devolver stock"); }
     };
 
     const handleReleaseFunds = async (movement) => {
-        if (!confirm(`¿Confirmar liberación de fondos de ${movement.paymentMethod}?`)) return;
+        if (!confirm(`¿Confirmar liberación de fondos?`)) return;
         const promise = updateMovement(movement.id, { 
-            ...movement, 
-            status: 'confirmed',
-            description: `${movement.description} (Liberado ${new Date().toLocaleDateString()})`
+            ...movement, status: 'confirmed', description: `${movement.description} (Liberado ${new Date().toLocaleDateString()})`
         });
         toast.promise(promise, { loading: 'Liberando...', success: '💰 Fondos disponibles', error: 'Error' });
     };
@@ -150,12 +136,14 @@ const FlujoCaja = () => {
                 };
             }
 
+            // 1. Guardar Movimiento Financiero
             if (editingId) {
                 await updateMovement(editingId, financialData);
             } else {
                 await addMovement(financialData);
             }
 
+            // 2. Descontar Stock (Si es venta nueva)
             if (isEcommerce && formData.itemId && formData.warehouse && !editingId) {
                 const item = inventory.find(i => i.id === formData.itemId);
                 if (item) {
@@ -166,6 +154,48 @@ const FlujoCaja = () => {
                     } else throw new Error(`¡Stock insuficiente en ${formData.warehouse}!`);
                 }
             }
+
+            // 3. GENERAR ORDEN DE PAGO POR DELIVERY
+            if (isEcommerce && formData.deliveryBy && !editingId) {
+                const deliveryOrder = {
+                    customer_id: null,
+                    equipment_id: null,
+                    customer_name: "Cliente E-commerce",
+                    technician_name: formData.deliveryBy,
+                    device_name: "Entrega a Domicilio",
+                    device_type: "Otro",
+                    job_type: "Delivery",
+                    status: "Finalizado y Pagado", // Para que aparezca en Remuneraciones
+                    reported_failure: `Envío de producto ID: ${formData.itemId}`,
+                    location: "Terreno",
+                    start_date: getChileTime(),
+                    total_cost: DELIVERY_COST,
+                    technician_paid: false,
+                    items: [
+                        {
+                            id: 999999,
+                            name: "Servicio de Delivery",
+                            type: "Servicio", // Importante: Tipo Servicio para comisión
+                            price: DELIVERY_COST,
+                            quantity: 1
+                        }
+                    ]
+                };
+
+                const { error: deliveryError } = await supabase.from('work_orders').insert([deliveryOrder]);
+                
+                if (deliveryError) {
+                    console.error("Error creando orden de delivery:", deliveryError);
+                    if (deliveryError.message?.includes("technician_paid")) {
+                        toast.warning("Falta actualizar la base de datos (columna technician_paid). Avise al administrador.");
+                    } else {
+                        toast.warning(`Error al asignar delivery: ${deliveryError.message}`);
+                    }
+                } else {
+                    toast.success(`Delivery asignado a ${formData.deliveryBy} por $${DELIVERY_COST}`);
+                }
+            }
+
         })();
 
         toast.promise(promise, { loading: 'Guardando...', success: () => { setIsModalOpen(false); setIsEcommerceModalOpen(false); resetForm(); return 'Registro Guardado'; }, error: (err) => `Error: ${err.message}` });
@@ -175,7 +205,6 @@ const FlujoCaja = () => {
     
     const handleDelete = async () => { 
         if (!itemToDelete) return; 
-        
         try {
             if (itemToDelete.type === 'income' && itemToDelete.items && itemToDelete.items.length > 0) {
                 await handleStockRestoration(itemToDelete.items);
@@ -194,111 +223,101 @@ const FlujoCaja = () => {
     const resetForm = () => { setFormData({ date: new Date().toISOString().split('T')[0], type: "income", docType: "39", docNumber: "", description: "", category: "VENTA", netAmount: 0, taxAmount: 0, totalAmount: 0, isTaxable: true, paymentMethod: "Mercado Pago", receivedAmount: 0, commissionAmount: 0, isEcommerce: false, itemId: "", warehouse: "Mercado Libre", quantity: 1, status: "confirmed", deliveryBy: "", docUrl: "" }); setEditingId(null); setItemSearchTerm(""); setSelectedItemName(""); setShowItemResults(false); };
     const updateAmounts = (value, field) => { let total = formData.totalAmount; let received = formData.receivedAmount; if (field === 'total') total = parseFloat(value) || 0; else if (field === 'received') received = parseFloat(value) || 0; const commission = total - received; let net = total; let tax = 0; if (formData.isTaxable && ["33", "39", "VOU"].includes(formData.docType)) { net = Math.round(total / 1.19); tax = total - net; } setFormData(prev => ({ ...prev, totalAmount: total, receivedAmount: received, commissionAmount: commission, netAmount: net, taxAmount: tax })); };
 
-    // --- CÁLCULOS ---
-    const safeMovements = Array.isArray(movements) ? movements : [];
-    const monthMovements = safeMovements.filter(m => !filterMonth || m.date.startsWith(filterMonth));
-    const totalExpense = monthMovements.filter(m => m.type === "expense").reduce((acc, curr) => acc + Number(curr.totalAmount || 0), 0);
-    const incomeConfirmed = monthMovements.filter(m => m.type === "income" && (m.status === 'confirmed' || !m.status)).reduce((acc, curr) => acc + Number(curr.totalAmount || 0), 0);
-    const availableBalance = incomeConfirmed - totalExpense;
-    const pendingBalance = monthMovements.filter(m => m.type === "income" && m.status === 'pending').reduce((acc, curr) => acc + Number(curr.totalAmount || 0), 0);
-    const netIva = monthMovements.filter(m => m.type === "income").reduce((acc, curr) => acc + Number(curr.taxAmount || 0), 0) - monthMovements.filter(m => m.type === "expense").reduce((acc, curr) => acc + Number(curr.taxAmount || 0), 0);
-    const getBalanceByMethod = (method) => { const income = monthMovements.filter(m => m.type === "income" && m.paymentMethod === method && (m.status === 'confirmed' || !m.status)).reduce((acc, curr) => acc + Number(curr.totalAmount || 0), 0); const expense = monthMovements.filter(m => m.type === "expense" && m.paymentMethod === method).reduce((acc, curr) => acc + Number(curr.totalAmount || 0), 0); return income - expense; };
-    
-    const cashBalance = getBalanceByMethod('Efectivo'); 
-    const bancoBalance = getBalanceByMethod('Banco de Chile'); 
-    const mercadoBalance = getBalanceByMethod('Mercado Pago');
-    
-    // 👇 BÚSQUEDA MEJORADA (MOV-XXXXX)
-    const filteredMovements = monthMovements.filter(m => { 
+    // Filtros visuales (sobre la página actual)
+    const filteredMovements = movements.filter(m => { 
         const matchesType = filterType === "Todos" || (filterType === "Ingresos" ? m.type === "income" : m.type === "expense"); 
-        
-        // Generamos el ID visual de 5 dígitos para la búsqueda
         const formattedId = `MOV-${String(m.id).padStart(5, '0')}`;
-
         const matchesSearch = (m.description || "").toLowerCase().includes(searchTerm.toLowerCase()) || 
-                              (m.docNumber || "").includes(searchTerm) ||
-                              (String(m.id).includes(searchTerm)) || // Busca "15"
-                              (formattedId.toLowerCase().includes(searchTerm.toLowerCase())); // Busca "MOV-00015"
-        
+                              (m.docNumber || "").includes(searchTerm) || (formattedId.toLowerCase().includes(searchTerm.toLowerCase()));
         return matchesType && matchesSearch; 
     });
 
-    if (loading) return <div className="p-8 text-center text-slate-500 animate-pulse">Cargando movimientos...</div>;
+    if (loading && !stats) return <div className="p-8 text-center text-slate-500 animate-pulse">Cargando movimientos...</div>;
 
     return (
         <div className="space-y-6 animate-fadeIn pb-20">
-            {/* Header, Stats, Breakdown, Filters */}
-            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4"><div><h1 className="text-3xl font-black bg-clip-text text-transparent bg-brand-gradient italic uppercase tracking-tighter">Flujo de Caja</h1><p className="text-slate-400 font-medium flex items-center gap-2"><Landmark size={14} className="text-brand-cyan" /> Control Financiero</p></div><div className="flex gap-3 w-full md:w-auto"><button onClick={() => { resetForm(); setIsEcommerceModalOpen(true); setFormData(prev => ({ ...prev, isEcommerce: true, category: 'VENTA', paymentMethod: 'Mercado Pago', docType: '39', warehouse: 'Mercado Libre' })); }} className="flex-1 md:flex-none bg-slate-800 hover:bg-slate-700 transition-all text-white px-6 py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 border border-white/10 shadow-lg"><ShoppingBag size={20} className="text-brand-cyan" /> Venta E-com</button><button onClick={() => { resetForm(); setIsModalOpen(true); }} className="flex-1 md:flex-none bg-brand-gradient hover:opacity-90 transition-all text-white px-6 py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-brand-purple/20 hover:scale-105"><Plus size={20} /> Movimiento</button></div></div>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4"><StatCard title="Saldo Disponible (Real)" value={`$${Number(availableBalance || 0).toLocaleString()}`} icon={<CheckCircle size={24} className="text-emerald-400" />} color="text-emerald-400" borderColor="border-emerald-500/30" bgColor="bg-emerald-500/5" /><StatCard title="Saldo Retenido (En Tránsito)" value={`$${Number(pendingBalance || 0).toLocaleString()}`} icon={<Clock size={24} className="text-amber-400" />} color="text-amber-400" borderColor="border-amber-500/30" bgColor="bg-amber-500/5" /><StatCard title="Egresos Totales" value={`$${Number(totalExpense || 0).toLocaleString()}`} icon={<ArrowDownCircle size={24} className="text-rose-400" />} /><StatCard title="IVA Neto F29" value={`$${Number(netIva || 0).toLocaleString()}`} icon={<Calculator size={24} className="text-brand-cyan" />} isSpecial /></div>
+            {/* Header */}
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                <div><h1 className="text-3xl font-black bg-clip-text text-transparent bg-brand-gradient italic uppercase tracking-tighter">Flujo de Caja</h1><p className="text-slate-400 font-medium flex items-center gap-2"><Landmark size={14} className="text-brand-cyan" /> Control Financiero</p></div>
+                <div className="flex gap-3 w-full md:w-auto"><button onClick={() => { resetForm(); setIsEcommerceModalOpen(true); setFormData(prev => ({ ...prev, isEcommerce: true, category: 'VENTA', paymentMethod: 'Mercado Pago', docType: '39', warehouse: 'Mercado Libre' })); }} className="flex-1 md:flex-none bg-slate-800 hover:bg-slate-700 transition-all text-white px-6 py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 border border-white/10 shadow-lg"><ShoppingBag size={20} className="text-brand-cyan" /> Venta E-com</button><button onClick={() => { resetForm(); setIsModalOpen(true); }} className="flex-1 md:flex-none bg-brand-gradient hover:opacity-90 transition-all text-white px-6 py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-brand-purple/20 hover:scale-105"><Plus size={20} /> Movimiento</button></div>
+            </div>
+
+            {/* KPI STATS */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                <StatCard title="Saldo Disponible (Real)" value={`$${Number(stats?.available_balance || 0).toLocaleString()}`} icon={<CheckCircle size={24} className="text-emerald-400" />} color="text-emerald-400" borderColor="border-emerald-500/30" bgColor="bg-emerald-500/5" />
+                <StatCard title="Saldo Retenido (En Tránsito)" value={`$${Number(stats?.pending_balance || 0).toLocaleString()}`} icon={<Clock size={24} className="text-amber-400" />} color="text-amber-400" borderColor="border-amber-500/30" bgColor="bg-amber-500/5" />
+                <StatCard title="Egresos Totales" value={`$${Number(stats?.total_expense || 0).toLocaleString()}`} icon={<ArrowDownCircle size={24} className="text-rose-400" />} />
+                <StatCard title="IVA Neto F29" value={`$${Number(stats?.net_iva || 0).toLocaleString()}`} icon={<Calculator size={24} className="text-brand-cyan" />} isSpecial />
+            </div>
             
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 {[
-                    { label: 'Efectivo', val: cashBalance, icon: <Banknote size={24} />, col: 'text-emerald-400', bg: 'bg-emerald-500/10' }, 
-                    { label: 'Banco de Chile', val: bancoBalance, icon: <Landmark size={24} />, col: 'text-brand-purple', bg: 'bg-brand-purple/10' }, 
-                    { label: 'Mercado Pago (Disp.)', val: mercadoBalance, icon: <CreditCard size={24} />, col: 'text-brand-cyan', bg: 'bg-brand-cyan/10' }
+                    { label: 'Efectivo', val: stats?.cash_balance, icon: <Banknote size={24} />, col: 'text-emerald-400', bg: 'bg-emerald-500/10' }, 
+                    { label: 'Banco de Chile', val: stats?.bank_balance, icon: <Landmark size={24} />, col: 'text-brand-purple', bg: 'bg-brand-purple/10' }, 
+                    { label: 'Mercado Pago', val: stats?.mp_balance, icon: <CreditCard size={24} />, col: 'text-brand-cyan', bg: 'bg-brand-cyan/10' }
                 ].map((b, i) => (<div key={i} className="bg-slate-900/40 border border-white/5 p-5 rounded-2xl flex items-center gap-4"><div className={`w-12 h-12 rounded-xl flex items-center justify-center ${b.bg} ${b.col}`}>{b.icon}</div><div><p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">{b.label}</p><h3 className="text-xl font-black text-white italic tracking-tighter">${Number(b.val || 0).toLocaleString()}</h3></div></div>))}
             </div>
 
-            <div className="bg-slate-900/50 backdrop-blur-xl p-4 rounded-2xl border border-white/5 flex flex-col md:flex-row gap-4 justify-between"><div className="flex gap-2 items-center">{["Todos", "Ingresos", "Egresos"].map((type) => (<button key={type} onClick={() => setFilterType(type)} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase ${filterType === type ? "bg-white/10 text-white" : "text-slate-500 hover:text-white"}`}>{type}</button>))}<div className="w-px h-6 bg-white/10 mx-2"></div><div className="flex items-center gap-2 bg-slate-950/50 border border-white/10 rounded-xl px-3 py-1.5"><Calendar size={14} className="text-slate-500" /><input type="month" className="bg-transparent border-none text-xs font-bold text-white outline-none uppercase" value={filterMonth} onChange={(e) => setFilterMonth(e.target.value)} /></div></div><div className="relative w-full md:w-80"><Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={18} /><input type="text" placeholder="Buscar MOV, ID, Cliente..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full bg-slate-800/50 border border-white/10 rounded-xl py-2 pl-10 pr-4 text-slate-200 outline-none focus:border-brand-purple/50" /></div></div>
+            {/* Filtros y Tabla */}
+            <div className="bg-slate-900/50 backdrop-blur-xl p-4 rounded-2xl border border-white/5 flex flex-col md:flex-row gap-4 justify-between">
+                <div className="flex gap-2 items-center">
+                    {["Todos", "Ingresos", "Egresos"].map((type) => (<button key={type} onClick={() => setFilterType(type)} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase ${filterType === type ? "bg-white/10 text-white" : "text-slate-500 hover:text-white"}`}>{type}</button>))}
+                    <div className="w-px h-6 bg-white/10 mx-2"></div>
+                    <div className="flex items-center gap-2 bg-slate-950/50 border border-white/10 rounded-xl px-3 py-1.5"><Calendar size={14} className="text-slate-500" /><input type="month" className="bg-transparent border-none text-xs font-bold text-white outline-none uppercase" value={filterMonth} onChange={(e) => { setFilterMonth(e.target.value); setPage(1); }} /></div>
+                </div>
+                <div className="relative w-full md:w-80"><Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={18} /><input type="text" placeholder="Buscar MOV, ID, Cliente..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full bg-slate-800/50 border border-white/10 rounded-xl py-2 pl-10 pr-4 text-slate-200 outline-none focus:border-brand-purple/50" /></div>
+            </div>
 
-            {/* Table */}
+            {/* Tabla */}
+            {/* 👇 AQUÍ ESTÁ EL CAMBIO PRINCIPAL PARA EL SCROLL */}
             <div className="bg-slate-900/50 rounded-2xl border border-white/5 overflow-hidden shadow-2xl">
-                <table className="w-full text-left">
-                    <thead className="bg-slate-950/50 text-[10px] uppercase font-black tracking-[0.2em] text-slate-500 border-b border-white/5">
-                        <tr>
-                            <th className="px-6 py-4">ID</th> 
-                            <th className="px-6 py-4">Fecha</th>
-                            <th className="px-6 py-4">Estado</th>
-                            <th className="px-6 py-4">Documento</th>
-                            <th className="px-6 py-4">Glosa</th>
-                            <th className="px-6 py-4 text-center">Cat.</th>
-                            <th className="px-6 py-4">Pago</th>
-                            <th className="px-6 py-4 text-right">Total</th>
-                            <th className="px-6 py-4"></th>
-                        </tr>
-                    </thead>
-                    <tbody className="divide-y divide-white/5">
-                        {filteredMovements.map((mov) => {
-                            const isPending = mov.status === 'pending';
-                            const docLabel = DOCUMENT_TYPES.find(d => d.id === mov.docType)?.label?.split(' ')[0] || mov.docType;
-                            
-                            // 👇 FORMATO VISUAL ID: MOV-00001 (5 dígitos)
-                            const formattedId = `MOV-${String(mov.id).padStart(5, '0')}`;
+                <div className="overflow-x-auto custom-scrollbar">
+                    <table className="w-full text-left min-w-[1000px]">
+                        <thead className="bg-slate-950/50 text-[10px] uppercase font-black tracking-[0.2em] text-slate-500 border-b border-white/5">
+                            <tr>
+                                <th className="px-6 py-4">ID</th> 
+                                <th className="px-6 py-4">Fecha</th>
+                                <th className="px-6 py-4">Estado</th>
+                                <th className="px-6 py-4">Documento</th>
+                                <th className="px-6 py-4">Glosa</th>
+                                <th className="px-6 py-4 text-center">Cat.</th>
+                                <th className="px-6 py-4">Pago</th>
+                                <th className="px-6 py-4 text-right">Total</th>
+                                <th className="px-6 py-4"></th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-white/5">
+                            {filteredMovements.map((mov) => {
+                                const isPending = mov.status === 'pending';
+                                const docLabel = DOCUMENT_TYPES.find(d => d.id === mov.docType)?.label?.split(' ')[0] || mov.docType;
+                                const formattedId = `MOV-${String(mov.id).padStart(5, '0')}`;
 
-                            return (
-                                <tr key={mov.id} className="hover:bg-white/[0.02] transition-colors group">
-                                    <td className="px-6 py-4">
-                                        <span className="font-mono text-[10px] text-brand-purple bg-brand-purple/10 px-2 py-1 rounded border border-brand-purple/20 flex items-center gap-1 w-fit">
-                                            <Hash size={10} /> {formattedId}
-                                        </span>
-                                    </td>
-                                    <td className="px-6 py-4 text-slate-400 text-xs font-mono">{mov.date}</td>
-                                    <td className="px-6 py-4">{isPending ? (<button onClick={() => handleReleaseFunds(mov)} className="flex items-center gap-1 bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-1 rounded-lg text-[10px] font-bold uppercase hover:bg-amber-500/20 transition-all group/btn" title="Clic para liberar"><Lock size={10} className="group-hover/btn:hidden" /><Unlock size={10} className="hidden group-hover/btn:block" /><span>Retenido</span></button>) : (<div className="flex items-center gap-1 text-emerald-500"><CheckCircle size={14} /><span className="text-[10px] font-bold uppercase">OK</span></div>)}</td>
-                                    <td className="px-6 py-4">
-                                        <div className="flex flex-col">
-                                            <div className="flex items-center gap-1 mb-0.5"><span className="text-[10px] font-bold text-brand-purple uppercase">{docLabel}</span></div>
-                                            <span className="text-sm font-black text-white font-mono tracking-tight mb-1">{mov.docNumber ? `#${mov.docNumber}` : 'S/N'}</span>
-                                            {mov.docUrl ? (<a href={mov.docUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-[10px] text-brand-cyan hover:text-white transition-colors w-fit"><Eye size={12} /> Ver PDF</a>) : (<div className="relative">{uploadingId === mov.id ? (<span className="text-[10px] text-slate-500 animate-pulse">Subiendo...</span>) : (<label className="flex items-center gap-1 text-[10px] text-slate-500 hover:text-brand-cyan cursor-pointer w-fit transition-colors"><UploadCloud size={12} /> Adjuntar<input type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg" onChange={(e) => handleFileUpload(e, mov.id)} /></label>)}</div>)}
-                                        </div>
-                                    </td>
-                                    <td className="px-6 py-4 text-slate-300 text-sm max-w-xs">
-                                        <div className="truncate">{mov.description}</div>
-                                        {mov.deliveryBy && (<span className="block text-[9px] text-slate-500 mt-0.5 flex items-center gap-1"><Truck size={10} /> {mov.deliveryBy}</span>)}
-                                        {/* 👇 BOTÓN VER DETALLE SI HAY ITEMS */}
-                                        {mov.items && mov.items.length > 0 && (
-                                            <button onClick={() => { setViewingItems(mov.items); setIsItemsModalOpen(true); }} className="mt-1 text-[10px] bg-brand-purple/10 text-brand-purple px-2 py-0.5 rounded border border-brand-purple/20 hover:bg-brand-purple/20 transition-all flex items-center gap-1 w-fit"><ShoppingBag size={10} /> Ver {mov.items.length} ítems</button>
-                                        )}
-                                    </td>
-                                    <td className="px-6 py-4 text-center"><span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-slate-800 border border-white/5 text-slate-400">{TAX_CATEGORIES.find(c => c.id === mov.category)?.label?.split(' ')[0]}</span></td>
-                                    <td className="px-6 py-4"><span className="text-[10px] font-bold text-slate-300 uppercase px-2 py-1 bg-slate-800/50 rounded-lg border border-white/5">{mov.paymentMethod}</span></td>
-                                    <td className="px-6 py-4 text-right"><span className={`text-sm font-black ${mov.type === 'income' ? 'text-emerald-400' : 'text-rose-400'}`}>{mov.type === 'income' ? '+' : '-'} ${Number(mov.totalAmount || 0).toLocaleString()}</span></td>
-                                    <td className="px-6 py-4 text-right"><div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-all justify-end"><button onClick={() => handleEdit(mov)} className="p-1.5 rounded-lg hover:bg-brand-cyan/10 text-slate-600 hover:text-brand-cyan"><Pencil size={14} /></button><button onClick={() => confirmDelete(mov)} className="p-1.5 rounded-lg hover:bg-rose-500/10 text-slate-600 hover:text-rose-500"><Trash2 size={14} /></button></div></td>
-                                </tr>
-                            );
-                        })}
-                    </tbody>
-                </table>
-                {filteredMovements.length === 0 && <div className="py-20 text-center text-slate-500 font-medium">Sin movimientos en este periodo.</div>}
+                                return (
+                                    <tr key={mov.id} className="hover:bg-white/[0.02] transition-colors group">
+                                        <td className="px-6 py-4"><span className="font-mono text-[10px] text-brand-purple bg-brand-purple/10 px-2 py-1 rounded border border-brand-purple/20 flex items-center gap-1 w-fit"><Hash size={10} /> {formattedId}</span></td>
+                                        <td className="px-6 py-4 text-slate-400 text-xs font-mono">{mov.date}</td>
+                                        <td className="px-6 py-4">{isPending ? (<button onClick={() => handleReleaseFunds(mov)} className="flex items-center gap-1 bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-1 rounded-lg text-[10px] font-bold uppercase hover:bg-amber-500/20 transition-all group/btn" title="Clic para liberar"><Lock size={10} className="group-hover/btn:hidden" /><Unlock size={10} className="hidden group-hover/btn:block" /><span>Retenido</span></button>) : (<div className="flex items-center gap-1 text-emerald-500"><CheckCircle size={14} /><span className="text-[10px] font-bold uppercase">OK</span></div>)}</td>
+                                        <td className="px-6 py-4"><div className="flex flex-col"><div className="flex items-center gap-1 mb-0.5"><span className="text-[10px] font-bold text-brand-purple uppercase">{docLabel}</span></div><span className="text-sm font-black text-white font-mono tracking-tight mb-1">{mov.docNumber ? `#${mov.docNumber}` : 'S/N'}</span>{mov.docUrl ? (<a href={mov.docUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-[10px] text-brand-cyan hover:text-white transition-colors w-fit"><Eye size={12} /> Ver PDF</a>) : (<div className="relative">{uploadingId === mov.id ? (<span className="text-[10px] text-slate-500 animate-pulse">Subiendo...</span>) : (<label className="flex items-center gap-1 text-[10px] text-slate-500 hover:text-brand-cyan cursor-pointer w-fit transition-colors"><UploadCloud size={12} /> Adjuntar<input type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg" onChange={(e) => handleFileUpload(e, mov.id)} /></label>)}</div>)}</div></td>
+                                        <td className="px-6 py-4 text-slate-300 text-sm max-w-xs"><div className="truncate">{mov.description}</div>{mov.deliveryBy && (<span className="block text-[9px] text-slate-500 mt-0.5 flex items-center gap-1"><Truck size={10} /> {mov.deliveryBy}</span>)}{mov.items && mov.items.length > 0 && (<button onClick={() => { setViewingItems(mov.items); setIsItemsModalOpen(true); }} className="mt-1 text-[10px] bg-brand-purple/10 text-brand-purple px-2 py-0.5 rounded border border-brand-purple/20 hover:bg-brand-purple/20 transition-all flex items-center gap-1 w-fit"><ShoppingBag size={10} /> Ver {mov.items.length} ítems</button>)}</td>
+                                        <td className="px-6 py-4 text-center"><span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-slate-800 border border-white/5 text-slate-400">{TAX_CATEGORIES.find(c => c.id === mov.category)?.label?.split(' ')[0]}</span></td>
+                                        <td className="px-6 py-4"><span className="text-[10px] font-bold text-slate-300 uppercase px-2 py-1 bg-slate-800/50 rounded-lg border border-white/5">{mov.paymentMethod}</span></td>
+                                        <td className="px-6 py-4 text-right"><span className={`text-sm font-black ${mov.type === 'income' ? 'text-emerald-400' : 'text-rose-400'}`}>{mov.type === 'income' ? '+' : '-'} ${Number(mov.totalAmount || 0).toLocaleString()}</span></td>
+                                        <td className="px-6 py-4 text-right"><div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-all justify-end"><button onClick={() => handleEdit(mov)} className="p-1.5 rounded-lg hover:bg-brand-cyan/10 text-slate-600 hover:text-brand-cyan"><Pencil size={14} /></button><button onClick={() => confirmDelete(mov)} className="p-1.5 rounded-lg hover:bg-rose-500/10 text-slate-600 hover:text-rose-500"><Trash2 size={14} /></button></div></td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                </div>
+                
+                {filteredMovements.length === 0 && <div className="py-20 text-center text-slate-500 font-medium">Sin movimientos en esta página.</div>}
+                
+                {/* Controles de Paginación */}
+                <div className="flex justify-between items-center bg-slate-950/50 p-4 border-t border-white/10">
+                    <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1} className="p-3 bg-slate-800 rounded-xl hover:bg-slate-700 disabled:opacity-50 text-white border border-white/5"><ChevronLeft size={20} /></button>
+                    <span className="text-xs font-bold text-slate-400">Pág <span className="text-white text-sm">{page}</span> / {totalPages || 1}</span>
+                    <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages} className="p-3 bg-slate-800 rounded-xl hover:bg-slate-700 disabled:opacity-50 text-white border border-white/5"><ChevronRight size={20} /></button>
+                </div>
             </div>
 
             {/* MODAL NUEVO/EDITAR MOVIMIENTO */}
@@ -326,7 +345,7 @@ const FlujoCaja = () => {
                 </div>
             )}
 
-            {/* MODAL E-COMMERCE */}
+            {/* MODAL E-COMMERCE CON LA NUEVA LÓGICA DE DELIVERY */}
             {isEcommerceModalOpen && (
                 <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-[100] flex items-center justify-center p-4">
                     <div className="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col max-h-[95vh] border-t-brand-cyan border-t-4">

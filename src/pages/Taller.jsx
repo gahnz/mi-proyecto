@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
 import {
     Plus, Search, Smartphone, Laptop, Tablet, User, Calendar, DollarSign,
-    MapPin, Clock, FileText, PenTool, Trash2, Monitor, Printer, Cpu, Share2, Home, Car
+    MapPin, Clock, FileText, PenTool, Trash2, Monitor, Printer, Cpu, Share2, 
+    Home, Car, ChevronLeft, ChevronRight
 } from "lucide-react";
 import { supabase } from "../supabase/client";
 import { toast } from "sonner"; 
@@ -11,11 +12,16 @@ import { useCustomers } from "../hooks/useCustomers";
 import { useEquipos } from "../hooks/useEquipos";
 import { useInventory } from "../hooks/useInventory";
 import { generateOrderPDF } from "../utils/pdfGenerator"; 
-// IMPORTAMOS EL NUEVO COMPONENTE MODAL
 import OrderModal from "../components/taller/OrderModal";
 
 const Taller = () => {
-    const { orders: repairs, loading, deleteOrder, refresh } = useWorkOrders();
+    // 1. Configuración de Paginación
+    const [page, setPage] = useState(1);
+    const PAGE_SIZE = 20;
+
+    // 2. Hook actualizado
+    const { orders: repairs, totalCount, loading, deleteOrder, refresh } = useWorkOrders(page, PAGE_SIZE);
+    
     const { customers: clients } = useCustomers();
     const { equipments: equipmentsList } = useEquipos();
     const { inventory: inventoryItems } = useInventory();
@@ -25,9 +31,10 @@ const Taller = () => {
     const [filterTech, setFilterTech] = useState("Todos");
     const [searchTerm, setSearchTerm] = useState("");
 
-    // Estado simplificado: solo controla si el modal abre y qué orden se edita
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [editingOrder, setEditingOrder] = useState(null);
+
+    const totalPages = Math.ceil((totalCount || 0) / PAGE_SIZE);
 
     useEffect(() => {
         const fetchTechnicians = async () => {
@@ -69,11 +76,48 @@ const Taller = () => {
     };
 
     const filteredRepairs = repairs.filter(repair => {
+        // 1. 🕒 LÓGICA DE ANTIGÜEDAD (OCULTAR FINALIZADOS > 7 DÍAS)
+        const isFinalizedState = [
+            "Finalizado y Pagado", 
+            "Retirado y no pagado", 
+            "Cancelado"
+        ].includes(repair.status);
+
+        if (isFinalizedState) {
+            // Usamos updated_at para saber cuándo fue la última vez que se tocó
+            // Si no existe updated_at, usamos created_at como respaldo
+            const lastActivityDate = new Date(repair.updated_at || repair.created_at);
+            const today = new Date();
+            
+            const diffTime = Math.abs(today - lastActivityDate);
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
+
+            if (diffDays > 7) {
+                return false; // ❌ Ocultar si pasaron más de 7 días
+            }
+        }
+
+        // 2. 🔍 FILTROS DE ESTADO CORREGIDOS
         let matchesStatus = true;
+        
         if (filterStatus !== "Todos") {
-            if (filterStatus === "En Cola") matchesStatus = repair.status === "En cola" || repair.status === "Trabajando";
-            else if (filterStatus === "Revisión") matchesStatus = ["Revisión del Coordinador", "Notificado y no pagado", "Pagado y no retirado"].includes(repair.status);
-            else matchesStatus = repair.status === filterStatus;
+            if (filterStatus === "En Cola") {
+                matchesStatus = ["En cola", "Trabajando"].includes(repair.status);
+            } else if (filterStatus === "Revisión") {
+                matchesStatus = [
+                    "Revisión del Coordinador", 
+                    "Notificado y no pagado", 
+                    "Pagado y no retirado",
+                    "Retirado y no pagado"
+                ].includes(repair.status);
+            } else if (filterStatus === "Finalizados") {
+                matchesStatus = [
+                    "Finalizado y Pagado", 
+                    "Cancelado"
+                ].includes(repair.status);
+            } else {
+                matchesStatus = repair.status === filterStatus;
+            }
         }
         
         const matchesTech = filterTech === "Todos" || (repair.technician || "").includes(filterTech);
@@ -96,10 +140,6 @@ const Taller = () => {
     const handleDeleteOrder = async (order) => {
         if (!window.confirm(`⚠️ ¿Estás seguro de eliminar la orden ${order.id}?`)) return;
         const processDelete = async () => {
-            // Lógica de restauración de stock podría ir aquí o en el hook
-            if (order.stock_deducted && order.items?.length > 0) {
-               // ... llamada a restore stock ...
-            }
             await deleteOrder(order.db_id);
             await refresh();
         };
@@ -164,14 +204,12 @@ const Taller = () => {
                                     <span className="px-2 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider bg-slate-800 text-slate-400 border border-white/5 flex items-center gap-1"><User size={10} /> {repair.customer}</span>
                                     <span className="px-2 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider bg-brand-purple/10 text-brand-purple border border-brand-purple/20 flex items-center gap-1"><PenTool size={10} /> {repair.technician || "Sin Asignar"}</span>
                                     
-                                    {/* Indicador Modalidad */}
                                     <span className={`px-2 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider border flex items-center gap-1 ${repair.location === 'Terreno' ? 'bg-amber-400/10 text-amber-400 border-amber-400/20' : 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20'}`}>
                                         {repair.location === 'Terreno' ? <Car size={10} /> : <Home size={10} />}
                                         {repair.location || 'Local'}
                                     </span>
                                 </div>
 
-                                {/* FECHAS DESTACADAS (Usando UTC) */}
                                 <div className="flex flex-wrap gap-3 mt-1">
                                     {repair.start_date && (
                                         <div className="flex items-center gap-1.5 text-[10px] text-brand-cyan bg-brand-cyan/5 px-2 py-0.5 rounded border border-brand-cyan/10 font-bold uppercase">
@@ -203,9 +241,42 @@ const Taller = () => {
                     </div>
                 ))}
             </div>
-            {filteredRepairs.length === 0 && !loading && <div className="text-center py-20 text-slate-300 text-sm font-medium">No hay órdenes registradas.</div>}
+            
+            {filteredRepairs.length === 0 && !loading && (
+                <div className="text-center py-20 text-slate-300 text-sm font-medium">
+                    {searchTerm || filterStatus !== "Todos" 
+                        ? "No se encontraron resultados en esta página." 
+                        : "No hay órdenes registradas."}
+                </div>
+            )}
 
-            {/* 🔥 AQUÍ USAMOS EL NUEVO COMPONENTE MODAL 🔥 */}
+            {/* BARRA DE PAGINACIÓN */}
+            <div className="flex justify-between items-center bg-slate-900/50 p-4 rounded-xl border border-white/5 sticky bottom-4 shadow-xl backdrop-blur-md">
+                <span className="text-xs text-slate-400 font-medium">
+                    Página <span className="text-white">{page}</span> de <span className="text-white">{totalPages || 1}</span> 
+                    <span className="mx-2 text-slate-600">|</span> 
+                    Total: {totalCount || 0} órdenes
+                </span>
+                
+                <div className="flex gap-2">
+                    <button 
+                        onClick={() => setPage(p => Math.max(1, p - 1))}
+                        disabled={page === 1}
+                        className="p-2 bg-slate-800 rounded-lg hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all text-white border border-white/5 hover:border-brand-purple/30"
+                    >
+                        <ChevronLeft size={18} />
+                    </button>
+                    
+                    <button 
+                        onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                        disabled={page >= totalPages}
+                        className="p-2 bg-slate-800 rounded-lg hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all text-white border border-white/5 hover:border-brand-purple/30"
+                    >
+                        <ChevronRight size={18} />
+                    </button>
+                </div>
+            </div>
+
             <OrderModal 
                 isOpen={isModalOpen} 
                 onClose={() => setIsModalOpen(false)} 
@@ -214,7 +285,7 @@ const Taller = () => {
                 clients={clients}
                 equipmentsList={equipmentsList}
                 inventoryItems={inventoryItems}
-                onOrderSaved={refresh} // Al guardar, refrescamos la lista
+                onOrderSaved={refresh} 
             />
         </div>
     );
