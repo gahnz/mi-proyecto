@@ -6,7 +6,7 @@ import {
     ShoppingBag, X, AlertTriangle, PackageMinus, Store,
     Lock, Unlock, CheckCircle, Clock, Truck, 
     Eye, UploadCloud, FileCheck, Hash, ChevronLeft, ChevronRight,
-    FileSpreadsheet // 👈 Icono para Excel
+    FileSpreadsheet
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "../supabase/client";
@@ -14,9 +14,9 @@ import { useCashFlow } from "../hooks/useCashFlow";
 import { useInventory } from "../hooks/useInventory";
 import { PAYMENT_METHODS, TAX_CATEGORIES, DOCUMENT_TYPES, WAREHOUSES } from "../constants";
 import { getChileTime } from "../utils/time";
-import * as XLSX from 'xlsx'; // 👈 Librería de Excel
+import * as XLSX from 'xlsx';
 
-const DELIVERY_COST = 3570; // Costo fijo de despacho
+const DELIVERY_COST = 3570;
 
 const FlujoCaja = () => {
     // 1. Configuración de Paginación y Mes
@@ -85,7 +85,6 @@ const FlujoCaja = () => {
     const handleExportExcel = async () => {
         const toastId = toast.loading("Generando reporte Excel...");
         try {
-            // Descargar TODOS los movimientos del mes (sin paginación)
             const startDate = `${filterMonth}-01`;
             const endDate = `${filterMonth}-31`;
             
@@ -103,7 +102,6 @@ const FlujoCaja = () => {
                 return toast.warning("No hay datos para exportar en este mes.");
             }
 
-            // Formatear datos para Excel
             const excelRows = fullData.map(m => ({
                 ID: m.id,
                 FECHA: m.date,
@@ -196,7 +194,6 @@ const FlujoCaja = () => {
                 await addMovement(financialData);
             }
 
-            // Descuento de stock
             if (isEcommerce && formData.itemId && formData.warehouse && !editingId) {
                 const item = inventory.find(i => i.id === formData.itemId);
                 if (item) {
@@ -208,7 +205,6 @@ const FlujoCaja = () => {
                 }
             }
 
-            // Creación de Orden de Delivery (Pago Nómina)
             if (isEcommerce && formData.deliveryBy && !editingId) {
                 const deliveryOrder = {
                     customer_id: null,
@@ -292,7 +288,6 @@ const FlujoCaja = () => {
                 <div><h1 className="text-3xl font-black bg-clip-text text-transparent bg-brand-gradient italic uppercase tracking-tighter">Flujo de Caja</h1><p className="text-slate-400 font-medium flex items-center gap-2"><Landmark size={14} className="text-brand-cyan" /> Control Financiero</p></div>
                 
                 <div className="flex gap-3 w-full md:w-auto flex-wrap">
-                    {/* BOTÓN EXPORTAR EXCEL */}
                     <button 
                         onClick={handleExportExcel}
                         className="flex-1 md:flex-none bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 border border-emerald-500/30 px-4 py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 transition-all"
@@ -361,7 +356,18 @@ const FlujoCaja = () => {
                                         <td className="px-6 py-4 text-slate-400 text-xs font-mono whitespace-nowrap">{mov.date}</td>
                                         <td className="px-6 py-4 whitespace-nowrap">{isPending ? (<button onClick={() => handleReleaseFunds(mov)} className="flex items-center gap-1 bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-1 rounded-lg text-[10px] font-bold uppercase hover:bg-amber-500/20 transition-all group/btn" title="Clic para liberar"><Lock size={10} className="group-hover/btn:hidden" /><Unlock size={10} className="hidden group-hover/btn:block" /><span>Retenido</span></button>) : (<div className="flex items-center gap-1 text-emerald-500"><CheckCircle size={14} /><span className="text-[10px] font-bold uppercase">OK</span></div>)}</td>
                                         <td className="px-6 py-4 whitespace-nowrap"><div className="flex flex-col"><div className="flex items-center gap-1 mb-0.5"><span className="text-[10px] font-bold text-brand-purple uppercase">{docLabel}</span></div><span className="text-sm font-black text-white font-mono tracking-tight mb-1">{mov.docNumber ? `#${mov.docNumber}` : 'S/N'}</span>{mov.docUrl ? (<a href={mov.docUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-[10px] text-brand-cyan hover:text-white transition-colors w-fit"><Eye size={12} /> Ver PDF</a>) : (<div className="relative">{uploadingId === mov.id ? (<span className="text-[10px] text-slate-500 animate-pulse">Subiendo...</span>) : (<label className="flex items-center gap-1 text-[10px] text-slate-500 hover:text-brand-cyan cursor-pointer w-fit transition-colors"><UploadCloud size={12} /> Adjuntar<input type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg" onChange={(e) => handleFileUpload(e, mov.id)} /></label>)}</div>)}</div></td>
-                                        <td className="px-6 py-4 text-slate-300 text-sm max-w-xs"><div className="truncate">{mov.description}</div>{mov.deliveryBy && (<span className="block text-[9px] text-slate-500 mt-0.5 flex items-center gap-1"><Truck size={10} /> {mov.deliveryBy}</span>)}{mov.items && mov.items.length > 0 && (<button onClick={() => { setViewingItems(mov.items); setIsItemsModalOpen(true); }} className="mt-1 text-[10px] bg-brand-purple/10 text-brand-purple px-2 py-0.5 rounded border border-brand-purple/20 hover:bg-brand-purple/20 transition-all flex items-center gap-1 w-fit"><ShoppingBag size={10} /> Ver {mov.items.length} ítems</button>)}</td>
+                                        
+                                        {/* Modificación solicitada: Máximo 20 caracteres */}
+                                        <td className="px-6 py-4 text-slate-300 text-sm max-w-xs">
+                                            <div title={mov.description}>
+                                                {mov.description && mov.description.length > 20 
+                                                    ? mov.description.slice(0, 20) + "..." 
+                                                    : mov.description}
+                                            </div>
+                                            {mov.deliveryBy && (<span className="block text-[9px] text-slate-500 mt-0.5 flex items-center gap-1"><Truck size={10} /> {mov.deliveryBy}</span>)}
+                                            {mov.items && mov.items.length > 0 && (<button onClick={() => { setViewingItems(mov.items); setIsItemsModalOpen(true); }} className="mt-1 text-[10px] bg-brand-purple/10 text-brand-purple px-2 py-0.5 rounded border border-brand-purple/20 hover:bg-brand-purple/20 transition-all flex items-center gap-1 w-fit"><ShoppingBag size={10} /> Ver {mov.items.length} ítems</button>)}
+                                        </td>
+
                                         <td className="px-6 py-4 text-center whitespace-nowrap"><span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-slate-800 border border-white/5 text-slate-400">{TAX_CATEGORIES.find(c => c.id === mov.category)?.label?.split(' ')[0]}</span></td>
                                         <td className="px-6 py-4 whitespace-nowrap"><span className="text-[10px] font-bold text-slate-300 uppercase px-2 py-1 bg-slate-800/50 rounded-lg border border-white/5">{mov.paymentMethod}</span></td>
                                         <td className="px-6 py-4 text-right whitespace-nowrap"><span className={`text-sm font-black ${mov.type === 'income' ? 'text-emerald-400' : 'text-rose-400'}`}>{mov.type === 'income' ? '+' : '-'} ${Number(mov.totalAmount || 0).toLocaleString()}</span></td>
