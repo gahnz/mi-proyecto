@@ -13,6 +13,7 @@ import FlujoCaja from "./pages/FlujoCaja";
 import PortalTecnico from "./pages/PortalTecnico";
 import Tracker from "./pages/Tracker";
 import ProtectedRoute from "./components/ProtectedRoute";
+import Remuneraciones from "./pages/Remuneraciones";
 
 function App() {
   return (
@@ -33,6 +34,7 @@ function App() {
         <Route path="/inventario" element={<ProtectedRoute requiredRole="admin"><Layout><Inventario /></Layout></ProtectedRoute>} />
         <Route path="/clientes" element={<ProtectedRoute requiredRole="admin"><Layout><Clientes /></Layout></ProtectedRoute>} />
         <Route path="/equipos" element={<ProtectedRoute requiredRole="admin"><Layout><Equipos /></Layout></ProtectedRoute>} />
+        <Route path="/remuneraciones" element={<ProtectedRoute requiredRole="admin"><Layout><Remuneraciones /></Layout></ProtectedRoute>} />
         <Route path="/tracker/:orderId" element={<Tracker />} />
         {/* Portal Técnico (Protegido pero accesible por rol tecnico) */}
         <Route path="/portal-tecnico" element={<ProtectedRoute requiredRole="tecnico"><PortalTecnico /></ProtectedRoute>} />
