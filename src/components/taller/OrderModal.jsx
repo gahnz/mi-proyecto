@@ -274,7 +274,7 @@ export default function OrderModal({
 
     const addItem = (item) => {
         if (!formData.selectedItems.some(i => i.id === item.id)) {
-            setFormData(p => ({ ...p, selectedItems: [...p.selectedItems, { id: item.id, name: item.name, price: item.price_sell, quantity: 1 }] }));
+            setFormData(p => ({ ...p, selectedItems: [...p.selectedItems, { id: item.id, name: item.name, price: item.price_sell, quantity: 1, type: item.type }] }));
         }
     };
 
