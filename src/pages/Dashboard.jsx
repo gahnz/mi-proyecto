@@ -21,7 +21,6 @@ export default function Dashboard() {
     waiting_count: 0, active_count: 0, ready_to_collect_count: 0,
     monthly_revenue: 0, monthly_expenses: 0,
     total_stock_value: 0, total_stock_items: 0, low_stock_items: 0,
-    movements_count: 0,
     sales_data: [],
     tech_ranking: [],
     warehouse_distribution: []
@@ -37,41 +36,56 @@ export default function Dashboard() {
   const fetchDashboardData = async () => {
     setLoading(true);
     try {
-      // 1. CARGA PESADA (Estadísticas calculadas en Servidor)
+      // 1. CARGA PESADA (Estadísticas calculadas en Servidor vía RPC)
+      // Asegúrate de que la función en SQL se llame 'get_enterprise_dashboard_stats'
       const { data: stats, error: statsError } = await supabase.rpc('get_enterprise_dashboard_stats', { 
         target_month: currentMonth 
       });
+      
       if (statsError) throw statsError;
       
-      // 2. CARGA LIGERA (Listas pequeñas)
-      // A. Últimos 5 movimientos
+      // 2. CARGA LIGERA (Listas pequeñas para UI)
+      
+      // A. Últimos 5 movimientos de caja
       const { data: movements } = await supabase
         .from('cash_flow')
         .select('*')
         .order('date', { ascending: false })
         .limit(5);
 
-      // B. Top Items (Hack: Traemos los últimos 50 items vendidos para estimar tendencia, es más rápido que leer todo el historial)
-      // Nota: Una implementación real de "Top histórico" requiere una tabla agregada, pero esto simula la carga sin colapsar.
+      // B. Top Items (Muestra de las últimas 50 órdenes para calcular tendencia)
       const { data: orders } = await supabase
         .from('work_orders')
         .select('items')
         .order('created_at', { ascending: false })
-        .limit(50); // Muestra de las últimas 50 órdenes para tendencia reciente
+        .limit(50); 
 
-      // Procesar Top Items en cliente (solo con la muestra pequeña)
+      // Procesar Top Items en cliente (con la muestra pequeña)
       const itemUsage = {};
       orders?.forEach(o => {
-        o.items?.forEach(i => {
-            if(i.type !== 'Servicio') itemUsage[i.name] = (itemUsage[i.name] || 0) + (i.quantity || 1);
-        });
+        if (Array.isArray(o.items)) {
+            o.items.forEach(i => {
+                // Filtramos 'Servicio' para contar solo repuestos/productos
+                if(i.type !== 'Servicio') {
+                    itemUsage[i.name] = (itemUsage[i.name] || 0) + (i.quantity || 1);
+                }
+            });
+        }
       });
+      
       const sortedItems = Object.keys(itemUsage)
         .map(k => ({ name: k, count: itemUsage[k] }))
         .sort((a,b) => b.count - a.count)
         .slice(0, 5);
 
-      setData(stats);
+      // Actualizar estados
+      // Si el RPC devuelve null en alguna lista, ponemos array vacío por seguridad
+      setData({
+          ...stats,
+          sales_data: stats?.sales_data || [],
+          tech_ranking: stats?.tech_ranking || [],
+          warehouse_distribution: stats?.warehouse_distribution || []
+      });
       setRecentMovements(movements || []);
       setTopItems(sortedItems);
 
@@ -91,14 +105,14 @@ export default function Dashboard() {
       <div className="flex items-center justify-center h-[80vh]">
         <div className="flex flex-col items-center gap-4">
           <div className="w-16 h-16 border-4 border-brand-purple border-t-transparent rounded-full animate-spin"></div>
-          <p className="text-slate-400 font-bold uppercase tracking-widest text-xs animate-pulse">Procesando Big Data...</p>
+          <p className="text-slate-400 font-bold uppercase tracking-widest text-xs animate-pulse">Procesando Datos...</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-700 pb-20">
+    <div className="space-y-8 animate-in fade-in duration-700 pb-20 w-full max-w-full overflow-hidden">
       {/* HEADER */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
@@ -160,7 +174,7 @@ export default function Dashboard() {
             <h3 className="text-3xl font-black text-white italic leading-none">{formatCurrency(data.total_stock_value)}</h3>
             <div className="flex items-center gap-1.5 pt-2 text-slate-500">
                 <Archive size={14} />
-                <span className="text-[10px] font-bold uppercase tracking-widest">{data.total_stock_items} Unidades</span>
+                <span className="text-[10px] font-bold uppercase tracking-widest">Global</span>
             </div>
           </div>
         </div>
@@ -204,7 +218,7 @@ export default function Dashboard() {
               </div>
           </div>
 
-          {/* 2. DISTRIBUCIÓN BODEGA */}
+          {/* 2. DISTRIBUCIÓN BODEGA (CORREGIDO EL ALTO) */}
           <div className="bg-slate-900/50 rounded-[2.5rem] border border-white/5 backdrop-blur-md p-8 flex flex-col">
               <div className="flex items-center justify-between mb-4">
                   <div>
@@ -213,17 +227,18 @@ export default function Dashboard() {
                   </div>
                   <div className="p-2 bg-purple-500/10 rounded-xl text-purple-500"><PieIcon size={20}/></div>
               </div>
-              <div className="flex-1 min-h-[200px]">
+              {/* 👇 CORRECCIÓN CLAVE: Altura fija h-[250px] */}
+              <div className="h-[250px] w-full">
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
                         <Pie
-                            data={data.warehouse_distribution}
+                            data={data.warehouse_distribution || []}
                             cx="50%" cy="50%"
                             innerRadius={60} outerRadius={80}
                             paddingAngle={5}
                             dataKey="value"
                         >
-                            {data.warehouse_distribution.map((entry, index) => (
+                            {data.warehouse_distribution?.map((entry, index) => (
                                 <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} stroke="rgba(0,0,0,0)" />
                             ))}
                         </Pie>
@@ -262,12 +277,13 @@ export default function Dashboard() {
 
       {/* ZONA INFERIOR: GRÁFICOS Y RANKING */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* GRÁFICO DE VENTAS */}
+          {/* GRÁFICO DE VENTAS (CORREGIDO EL ALTO) */}
           <div className="lg:col-span-2 bg-slate-900/50 rounded-[2.5rem] border border-white/5 backdrop-blur-md p-8">
               <div className="flex items-center justify-between mb-6">
                   <div><h3 className="text-xl font-black text-white uppercase italic tracking-tighter">Flujo Mensual</h3><p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Ingresos Diarios</p></div>
                   <div className="p-2 bg-emerald-500/10 rounded-xl text-emerald-500"><BarChart3 size={20}/></div>
               </div>
+              {/* 👇 CORRECCIÓN CLAVE: Altura fija h-[250px] */}
               <div className="h-[250px] w-full">
                   <ResponsiveContainer width="100%" height="100%">
                       <AreaChart data={data.sales_data}>

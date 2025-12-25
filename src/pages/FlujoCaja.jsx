@@ -5,7 +5,8 @@ import {
     Info, Calculator, Landmark, Pencil, CreditCard, Banknote, Percent,
     ShoppingBag, X, AlertTriangle, PackageMinus, Store,
     Lock, Unlock, CheckCircle, Clock, Truck, 
-    Eye, UploadCloud, FileCheck, Hash, ChevronLeft, ChevronRight
+    Eye, UploadCloud, FileCheck, Hash, ChevronLeft, ChevronRight,
+    FileSpreadsheet // 👈 Icono para Excel
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "../supabase/client";
@@ -13,8 +14,9 @@ import { useCashFlow } from "../hooks/useCashFlow";
 import { useInventory } from "../hooks/useInventory";
 import { PAYMENT_METHODS, TAX_CATEGORIES, DOCUMENT_TYPES, WAREHOUSES } from "../constants";
 import { getChileTime } from "../utils/time";
+import * as XLSX from 'xlsx'; // 👈 Librería de Excel
 
-const DELIVERY_COST = 3570;
+const DELIVERY_COST = 3570; // Costo fijo de despacho
 
 const FlujoCaja = () => {
     // 1. Configuración de Paginación y Mes
@@ -79,6 +81,59 @@ const FlujoCaja = () => {
         fetchTechnicians();
     }, []);
 
+    // --- FUNCIÓN DE EXPORTACIÓN A EXCEL ---
+    const handleExportExcel = async () => {
+        const toastId = toast.loading("Generando reporte Excel...");
+        try {
+            // Descargar TODOS los movimientos del mes (sin paginación)
+            const startDate = `${filterMonth}-01`;
+            const endDate = `${filterMonth}-31`;
+            
+            const { data: fullData, error } = await supabase
+                .from("cash_flow")
+                .select("*")
+                .gte('date', startDate)
+                .lte('date', endDate)
+                .order("date", { ascending: true });
+
+            if (error) throw error;
+
+            if (!fullData || fullData.length === 0) {
+                toast.dismiss(toastId);
+                return toast.warning("No hay datos para exportar en este mes.");
+            }
+
+            // Formatear datos para Excel
+            const excelRows = fullData.map(m => ({
+                ID: m.id,
+                FECHA: m.date,
+                TIPO: m.type === 'income' ? 'INGRESO' : 'EGRESO',
+                CATEGORIA: TAX_CATEGORIES.find(c => c.id === m.category)?.label || m.category,
+                DESCRIPCION: m.description,
+                METODO_PAGO: m.payment_method,
+                DOC_TIPO: DOCUMENT_TYPES.find(d => d.id === m.doc_type)?.label || m.doc_type,
+                NUM_DOC: m.doc_number || '-',
+                MONTO_NETO: m.net_amount || 0,
+                IVA: m.tax_amount || 0,
+                TOTAL: m.total_amount || 0,
+                ESTADO: m.status === 'confirmed' ? 'CONFIRMADO' : 'PENDIENTE',
+                E_COMMERCE: m.is_ecommerce ? 'SI' : 'NO',
+                DELIVERY_POR: m.delivery_by || '-'
+            }));
+
+            const worksheet = XLSX.utils.json_to_sheet(excelRows);
+            const workbook = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(workbook, worksheet, `Flujo ${filterMonth}`);
+            XLSX.writeFile(workbook, `Reporte_Caja_${filterMonth}.xlsx`);
+            
+            toast.success("Excel descargado correctamente", { id: toastId });
+
+        } catch (error) {
+            console.error(error);
+            toast.error("Error al exportar Excel", { id: toastId });
+        }
+    };
+
     const handleFileUpload = async (e, movementId) => {
         const file = e.target.files[0];
         if (!file) return;
@@ -122,7 +177,6 @@ const FlujoCaja = () => {
         const promise = (async () => {
             let financialData = { ...formData };
             const isEcommerce = formData.isEcommerce === true;
-            
             const isDigitalPayment = ["Mercado Pago"].includes(formData.paymentMethod);
             financialData.status = (isEcommerce || isDigitalPayment) ? 'pending' : 'confirmed';
 
@@ -136,14 +190,13 @@ const FlujoCaja = () => {
                 };
             }
 
-            // 1. Guardar Movimiento Financiero
             if (editingId) {
                 await updateMovement(editingId, financialData);
             } else {
                 await addMovement(financialData);
             }
 
-            // 2. Descontar Stock (Si es venta nueva)
+            // Descuento de stock
             if (isEcommerce && formData.itemId && formData.warehouse && !editingId) {
                 const item = inventory.find(i => i.id === formData.itemId);
                 if (item) {
@@ -155,7 +208,7 @@ const FlujoCaja = () => {
                 }
             }
 
-            // 3. GENERAR ORDEN DE PAGO POR DELIVERY
+            // Creación de Orden de Delivery (Pago Nómina)
             if (isEcommerce && formData.deliveryBy && !editingId) {
                 const deliveryOrder = {
                     customer_id: null,
@@ -165,7 +218,7 @@ const FlujoCaja = () => {
                     device_name: "Entrega a Domicilio",
                     device_type: "Otro",
                     job_type: "Delivery",
-                    status: "Finalizado y Pagado", // Para que aparezca en Remuneraciones
+                    status: "Finalizado y Pagado",
                     reported_failure: `Envío de producto ID: ${formData.itemId}`,
                     location: "Terreno",
                     start_date: getChileTime(),
@@ -175,7 +228,7 @@ const FlujoCaja = () => {
                         {
                             id: 999999,
                             name: "Servicio de Delivery",
-                            type: "Servicio", // Importante: Tipo Servicio para comisión
+                            type: "Servicio",
                             price: DELIVERY_COST,
                             quantity: 1
                         }
@@ -187,7 +240,7 @@ const FlujoCaja = () => {
                 if (deliveryError) {
                     console.error("Error creando orden de delivery:", deliveryError);
                     if (deliveryError.message?.includes("technician_paid")) {
-                        toast.warning("Falta actualizar la base de datos (columna technician_paid). Avise al administrador.");
+                        toast.warning("Falta actualizar la base de datos (columna technician_paid).");
                     } else {
                         toast.warning(`Error al asignar delivery: ${deliveryError.message}`);
                     }
@@ -195,7 +248,6 @@ const FlujoCaja = () => {
                     toast.success(`Delivery asignado a ${formData.deliveryBy} por $${DELIVERY_COST}`);
                 }
             }
-
         })();
 
         toast.promise(promise, { loading: 'Guardando...', success: () => { setIsModalOpen(false); setIsEcommerceModalOpen(false); resetForm(); return 'Registro Guardado'; }, error: (err) => `Error: ${err.message}` });
@@ -223,7 +275,6 @@ const FlujoCaja = () => {
     const resetForm = () => { setFormData({ date: new Date().toISOString().split('T')[0], type: "income", docType: "39", docNumber: "", description: "", category: "VENTA", netAmount: 0, taxAmount: 0, totalAmount: 0, isTaxable: true, paymentMethod: "Mercado Pago", receivedAmount: 0, commissionAmount: 0, isEcommerce: false, itemId: "", warehouse: "Mercado Libre", quantity: 1, status: "confirmed", deliveryBy: "", docUrl: "" }); setEditingId(null); setItemSearchTerm(""); setSelectedItemName(""); setShowItemResults(false); };
     const updateAmounts = (value, field) => { let total = formData.totalAmount; let received = formData.receivedAmount; if (field === 'total') total = parseFloat(value) || 0; else if (field === 'received') received = parseFloat(value) || 0; const commission = total - received; let net = total; let tax = 0; if (formData.isTaxable && ["33", "39", "VOU"].includes(formData.docType)) { net = Math.round(total / 1.19); tax = total - net; } setFormData(prev => ({ ...prev, totalAmount: total, receivedAmount: received, commissionAmount: commission, netAmount: net, taxAmount: tax })); };
 
-    // Filtros visuales (sobre la página actual)
     const filteredMovements = movements.filter(m => { 
         const matchesType = filterType === "Todos" || (filterType === "Ingresos" ? m.type === "income" : m.type === "expense"); 
         const formattedId = `MOV-${String(m.id).padStart(5, '0')}`;
@@ -235,11 +286,24 @@ const FlujoCaja = () => {
     if (loading && !stats) return <div className="p-8 text-center text-slate-500 animate-pulse">Cargando movimientos...</div>;
 
     return (
-        <div className="space-y-6 animate-fadeIn pb-20">
+        <div className="space-y-6 animate-fadeIn pb-20 w-full max-w-full overflow-hidden">
             {/* Header */}
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                 <div><h1 className="text-3xl font-black bg-clip-text text-transparent bg-brand-gradient italic uppercase tracking-tighter">Flujo de Caja</h1><p className="text-slate-400 font-medium flex items-center gap-2"><Landmark size={14} className="text-brand-cyan" /> Control Financiero</p></div>
-                <div className="flex gap-3 w-full md:w-auto"><button onClick={() => { resetForm(); setIsEcommerceModalOpen(true); setFormData(prev => ({ ...prev, isEcommerce: true, category: 'VENTA', paymentMethod: 'Mercado Pago', docType: '39', warehouse: 'Mercado Libre' })); }} className="flex-1 md:flex-none bg-slate-800 hover:bg-slate-700 transition-all text-white px-6 py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 border border-white/10 shadow-lg"><ShoppingBag size={20} className="text-brand-cyan" /> Venta E-com</button><button onClick={() => { resetForm(); setIsModalOpen(true); }} className="flex-1 md:flex-none bg-brand-gradient hover:opacity-90 transition-all text-white px-6 py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-brand-purple/20 hover:scale-105"><Plus size={20} /> Movimiento</button></div>
+                
+                <div className="flex gap-3 w-full md:w-auto flex-wrap">
+                    {/* BOTÓN EXPORTAR EXCEL */}
+                    <button 
+                        onClick={handleExportExcel}
+                        className="flex-1 md:flex-none bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 border border-emerald-500/30 px-4 py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 transition-all"
+                        title="Descargar reporte mensual"
+                    >
+                        <FileSpreadsheet size={20} /> <span className="hidden sm:inline">Excel</span>
+                    </button>
+
+                    <button onClick={() => { resetForm(); setIsEcommerceModalOpen(true); setFormData(prev => ({ ...prev, isEcommerce: true, category: 'VENTA', paymentMethod: 'Mercado Pago', docType: '39', warehouse: 'Mercado Libre' })); }} className="flex-1 md:flex-none bg-slate-800 hover:bg-slate-700 transition-all text-white px-6 py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 border border-white/10 shadow-lg"><ShoppingBag size={20} className="text-brand-cyan" /> Venta E-com</button>
+                    <button onClick={() => { resetForm(); setIsModalOpen(true); }} className="flex-1 md:flex-none bg-brand-gradient hover:opacity-90 transition-all text-white px-6 py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-brand-purple/20 hover:scale-105"><Plus size={20} /> Movimiento</button>
+                </div>
             </div>
 
             {/* KPI STATS */}
@@ -268,21 +332,20 @@ const FlujoCaja = () => {
                 <div className="relative w-full md:w-80"><Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={18} /><input type="text" placeholder="Buscar MOV, ID, Cliente..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full bg-slate-800/50 border border-white/10 rounded-xl py-2 pl-10 pr-4 text-slate-200 outline-none focus:border-brand-purple/50" /></div>
             </div>
 
-            {/* Tabla */}
-            {/* 👇 AQUÍ ESTÁ EL CAMBIO PRINCIPAL PARA EL SCROLL */}
+            {/* Tabla con Scroll Horizontal */}
             <div className="bg-slate-900/50 rounded-2xl border border-white/5 overflow-hidden shadow-2xl">
-                <div className="overflow-x-auto custom-scrollbar">
-                    <table className="w-full text-left min-w-[1000px]">
+                <div className="w-full overflow-x-auto custom-scrollbar pb-4">
+                    <table className="w-full text-left min-w-max border-collapse">
                         <thead className="bg-slate-950/50 text-[10px] uppercase font-black tracking-[0.2em] text-slate-500 border-b border-white/5">
                             <tr>
-                                <th className="px-6 py-4">ID</th> 
-                                <th className="px-6 py-4">Fecha</th>
-                                <th className="px-6 py-4">Estado</th>
-                                <th className="px-6 py-4">Documento</th>
-                                <th className="px-6 py-4">Glosa</th>
-                                <th className="px-6 py-4 text-center">Cat.</th>
-                                <th className="px-6 py-4">Pago</th>
-                                <th className="px-6 py-4 text-right">Total</th>
+                                <th className="px-6 py-4 whitespace-nowrap">ID</th> 
+                                <th className="px-6 py-4 whitespace-nowrap">Fecha</th>
+                                <th className="px-6 py-4 whitespace-nowrap">Estado</th>
+                                <th className="px-6 py-4 whitespace-nowrap">Documento</th>
+                                <th className="px-6 py-4 whitespace-nowrap">Glosa</th>
+                                <th className="px-6 py-4 text-center whitespace-nowrap">Cat.</th>
+                                <th className="px-6 py-4 whitespace-nowrap">Pago</th>
+                                <th className="px-6 py-4 text-right whitespace-nowrap">Total</th>
                                 <th className="px-6 py-4"></th>
                             </tr>
                         </thead>
@@ -294,15 +357,15 @@ const FlujoCaja = () => {
 
                                 return (
                                     <tr key={mov.id} className="hover:bg-white/[0.02] transition-colors group">
-                                        <td className="px-6 py-4"><span className="font-mono text-[10px] text-brand-purple bg-brand-purple/10 px-2 py-1 rounded border border-brand-purple/20 flex items-center gap-1 w-fit"><Hash size={10} /> {formattedId}</span></td>
-                                        <td className="px-6 py-4 text-slate-400 text-xs font-mono">{mov.date}</td>
-                                        <td className="px-6 py-4">{isPending ? (<button onClick={() => handleReleaseFunds(mov)} className="flex items-center gap-1 bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-1 rounded-lg text-[10px] font-bold uppercase hover:bg-amber-500/20 transition-all group/btn" title="Clic para liberar"><Lock size={10} className="group-hover/btn:hidden" /><Unlock size={10} className="hidden group-hover/btn:block" /><span>Retenido</span></button>) : (<div className="flex items-center gap-1 text-emerald-500"><CheckCircle size={14} /><span className="text-[10px] font-bold uppercase">OK</span></div>)}</td>
-                                        <td className="px-6 py-4"><div className="flex flex-col"><div className="flex items-center gap-1 mb-0.5"><span className="text-[10px] font-bold text-brand-purple uppercase">{docLabel}</span></div><span className="text-sm font-black text-white font-mono tracking-tight mb-1">{mov.docNumber ? `#${mov.docNumber}` : 'S/N'}</span>{mov.docUrl ? (<a href={mov.docUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-[10px] text-brand-cyan hover:text-white transition-colors w-fit"><Eye size={12} /> Ver PDF</a>) : (<div className="relative">{uploadingId === mov.id ? (<span className="text-[10px] text-slate-500 animate-pulse">Subiendo...</span>) : (<label className="flex items-center gap-1 text-[10px] text-slate-500 hover:text-brand-cyan cursor-pointer w-fit transition-colors"><UploadCloud size={12} /> Adjuntar<input type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg" onChange={(e) => handleFileUpload(e, mov.id)} /></label>)}</div>)}</div></td>
+                                        <td className="px-6 py-4 whitespace-nowrap"><span className="font-mono text-[10px] text-brand-purple bg-brand-purple/10 px-2 py-1 rounded border border-brand-purple/20 flex items-center gap-1 w-fit"><Hash size={10} /> {formattedId}</span></td>
+                                        <td className="px-6 py-4 text-slate-400 text-xs font-mono whitespace-nowrap">{mov.date}</td>
+                                        <td className="px-6 py-4 whitespace-nowrap">{isPending ? (<button onClick={() => handleReleaseFunds(mov)} className="flex items-center gap-1 bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-1 rounded-lg text-[10px] font-bold uppercase hover:bg-amber-500/20 transition-all group/btn" title="Clic para liberar"><Lock size={10} className="group-hover/btn:hidden" /><Unlock size={10} className="hidden group-hover/btn:block" /><span>Retenido</span></button>) : (<div className="flex items-center gap-1 text-emerald-500"><CheckCircle size={14} /><span className="text-[10px] font-bold uppercase">OK</span></div>)}</td>
+                                        <td className="px-6 py-4 whitespace-nowrap"><div className="flex flex-col"><div className="flex items-center gap-1 mb-0.5"><span className="text-[10px] font-bold text-brand-purple uppercase">{docLabel}</span></div><span className="text-sm font-black text-white font-mono tracking-tight mb-1">{mov.docNumber ? `#${mov.docNumber}` : 'S/N'}</span>{mov.docUrl ? (<a href={mov.docUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-[10px] text-brand-cyan hover:text-white transition-colors w-fit"><Eye size={12} /> Ver PDF</a>) : (<div className="relative">{uploadingId === mov.id ? (<span className="text-[10px] text-slate-500 animate-pulse">Subiendo...</span>) : (<label className="flex items-center gap-1 text-[10px] text-slate-500 hover:text-brand-cyan cursor-pointer w-fit transition-colors"><UploadCloud size={12} /> Adjuntar<input type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg" onChange={(e) => handleFileUpload(e, mov.id)} /></label>)}</div>)}</div></td>
                                         <td className="px-6 py-4 text-slate-300 text-sm max-w-xs"><div className="truncate">{mov.description}</div>{mov.deliveryBy && (<span className="block text-[9px] text-slate-500 mt-0.5 flex items-center gap-1"><Truck size={10} /> {mov.deliveryBy}</span>)}{mov.items && mov.items.length > 0 && (<button onClick={() => { setViewingItems(mov.items); setIsItemsModalOpen(true); }} className="mt-1 text-[10px] bg-brand-purple/10 text-brand-purple px-2 py-0.5 rounded border border-brand-purple/20 hover:bg-brand-purple/20 transition-all flex items-center gap-1 w-fit"><ShoppingBag size={10} /> Ver {mov.items.length} ítems</button>)}</td>
-                                        <td className="px-6 py-4 text-center"><span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-slate-800 border border-white/5 text-slate-400">{TAX_CATEGORIES.find(c => c.id === mov.category)?.label?.split(' ')[0]}</span></td>
-                                        <td className="px-6 py-4"><span className="text-[10px] font-bold text-slate-300 uppercase px-2 py-1 bg-slate-800/50 rounded-lg border border-white/5">{mov.paymentMethod}</span></td>
-                                        <td className="px-6 py-4 text-right"><span className={`text-sm font-black ${mov.type === 'income' ? 'text-emerald-400' : 'text-rose-400'}`}>{mov.type === 'income' ? '+' : '-'} ${Number(mov.totalAmount || 0).toLocaleString()}</span></td>
-                                        <td className="px-6 py-4 text-right"><div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-all justify-end"><button onClick={() => handleEdit(mov)} className="p-1.5 rounded-lg hover:bg-brand-cyan/10 text-slate-600 hover:text-brand-cyan"><Pencil size={14} /></button><button onClick={() => confirmDelete(mov)} className="p-1.5 rounded-lg hover:bg-rose-500/10 text-slate-600 hover:text-rose-500"><Trash2 size={14} /></button></div></td>
+                                        <td className="px-6 py-4 text-center whitespace-nowrap"><span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-slate-800 border border-white/5 text-slate-400">{TAX_CATEGORIES.find(c => c.id === mov.category)?.label?.split(' ')[0]}</span></td>
+                                        <td className="px-6 py-4 whitespace-nowrap"><span className="text-[10px] font-bold text-slate-300 uppercase px-2 py-1 bg-slate-800/50 rounded-lg border border-white/5">{mov.paymentMethod}</span></td>
+                                        <td className="px-6 py-4 text-right whitespace-nowrap"><span className={`text-sm font-black ${mov.type === 'income' ? 'text-emerald-400' : 'text-rose-400'}`}>{mov.type === 'income' ? '+' : '-'} ${Number(mov.totalAmount || 0).toLocaleString()}</span></td>
+                                        <td className="px-6 py-4 text-right whitespace-nowrap"><div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-all justify-end"><button onClick={() => handleEdit(mov)} className="p-1.5 rounded-lg hover:bg-brand-cyan/10 text-slate-600 hover:text-brand-cyan"><Pencil size={14} /></button><button onClick={() => confirmDelete(mov)} className="p-1.5 rounded-lg hover:bg-rose-500/10 text-slate-600 hover:text-rose-500"><Trash2 size={14} /></button></div></td>
                                     </tr>
                                 );
                             })}
@@ -320,7 +383,7 @@ const FlujoCaja = () => {
                 </div>
             </div>
 
-            {/* MODAL NUEVO/EDITAR MOVIMIENTO */}
+            {/* MODALES EXISTENTES SE MANTIENEN IGUAL... */}
             {isModalOpen && (
                 <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-[100] flex items-center justify-center p-4">
                     <div className="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
